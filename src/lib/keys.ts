@@ -82,6 +82,7 @@ function withSelected(f: (m: MessageView) => void) {
 
 export const bindings: Binding[] = [
   { keys: "⌘K", label: "Jump to a conversation", group: "General", run: () => (app.overlay = "switcher") },
+  { keys: "⌘F", label: "Search messages", group: "General", run: () => (app.overlay = "search") },
   { keys: "/", label: "Search messages", group: "General", run: () => (app.overlay = "search") },
   { keys: "?", label: "Show keyboard shortcuts", group: "General", run: () => (app.overlay = "keys") },
   { keys: "Esc", label: "Leave the composer, close the thread or a dialog", group: "General", run: escape },
@@ -166,6 +167,11 @@ export function handleKey(e: KeyboardEvent): boolean {
   if (e.key === "k" && e.metaKey && !e.shiftKey && !e.altKey) {
     e.preventDefault();
     app.overlay = app.overlay === "switcher" ? null : "switcher";
+    return true;
+  }
+  if (e.key === "f" && e.metaKey && !e.shiftKey && !e.altKey) {
+    e.preventDefault();
+    app.overlay = app.overlay === "search" ? null : "search";
     return true;
   }
   // Dialogs and overlays own the keyboard while open.

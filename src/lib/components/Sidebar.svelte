@@ -50,14 +50,22 @@
   <!-- Room for the window controls; draggable like a title bar. -->
   <div data-tauri-drag-region class="h-12 shrink-0"></div>
 
-  <div class="px-3 pb-3">
+  <div class="flex gap-1.5 px-3 pb-3">
     <button
-      class="flex h-9 w-full items-center gap-2 rounded-lg border border-border bg-background px-3 text-left text-muted-foreground hover:border-input"
+      class="flex h-9 min-w-0 flex-1 items-center gap-2 rounded-lg border border-border bg-background px-3 text-left text-muted-foreground hover:border-input"
       onclick={() => (app.overlay = "switcher")}
     >
-      <Search class="size-3.5" aria-hidden="true" />
       <span class="flex-1">Jump to</span>
       <kbd class="font-sans text-[11px]" aria-label="Command K">⌘K</kbd>
+    </button>
+    <button
+      class="inline-flex size-9 shrink-0 items-center justify-center rounded-lg border border-border bg-background text-muted-foreground hover:border-input hover:text-foreground"
+      aria-label="Search messages"
+      aria-keyshortcuts="Meta+F"
+      title="Search messages (⌘F)"
+      onclick={() => (app.overlay = "search")}
+    >
+      <Search class="size-4" aria-hidden="true" />
     </button>
   </div>
 
