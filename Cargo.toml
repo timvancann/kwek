@@ -1,0 +1,32 @@
+[workspace]
+resolver = "3"
+members = ["crates/kwek-core"]
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+license = "UNLICENSED"
+
+[workspace.dependencies]
+anyhow = "1"
+async-trait = "0.1"
+base64 = "0.22"
+futures = "0.3"
+percent-encoding = "2"
+pulldown-cmark = { version = "0.13", default-features = false }
+getrandom = "0.3"
+keyring = { version = "3", features = ["apple-native"] }
+proptest = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "http2", "stream"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+time = { version = "0.3", features = ["formatting", "parsing", "macros", "serde"] }
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+ts-rs = "11"
+url = "2"
+uuid = { version = "1", features = ["v4"] }

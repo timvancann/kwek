@@ -1,0 +1,1323 @@
+//! The sync engine: the only component that talks to Google. Events are hints, REST is
+//! truth: every write is an idempotent upsert, and a reconcile pass closes any gap.
+
+pub mod apply;
+
+use std::collections::{BTreeSet, HashMap};
+use std::sync::{Arc, Mutex as StdMutex};
+use std::time::{Duration, Instant, SystemTime};
+
+use futures::StreamExt;
+use rusqlite::Connection;
+use tokio::sync::{Mutex, Notify};
+
+use crate::auth::TokenManager;
+use crate::chat::{ChatApi, Emoji, EmojiReactionSummary, ListMessages, older_than_filter, thread_filter};
+use crate::db::read::{self, SearchFilter};
+use crate::db::{Db, kv_get, kv_set, write};
+use crate::error::{Error, Result};
+use crate::events::{
+    Event, EventsClient, SPACES_EVENT_TYPES, SPACES_TARGET, USER_EVENT_TYPES, decode_space_event, user_target,
+};
+use crate::people::PeopleApi;
+use crate::render;
+use crate::ts::{self, DAY, MINUTE, Micros};
+use crate::views::{self, AuthState, Builder, MessageView, SearchHit, SearchResult, SpaceSummary, SyncStatus};
+
+pub use apply::{Applied, apply};
+
+const INITIAL_PAGE: u32 = 200;
+const OLDER_PAGE: u32 = 100;
+const RENEW_EVERY: Duration = Duration::from_secs(3 * 3600);
+const RECONCILE_EVERY: Duration = Duration::from_secs(15 * 60);
+/// `spaceEvents.list` only reaches back 28 days; stay clear of the edge.
+const EVENT_RETENTION: Micros = 27 * DAY;
+
+#[derive(Debug, Clone)]
+pub struct Notification {
+    pub title: String,
+    pub body: String,
+    pub space: String,
+    pub message: String,
+    pub thread: Option<String>,
+}
+
+/// Where the engine pushes changes, always after the DB commit.
+pub trait Sink: Send + Sync {
+    fn spaces_changed(&self, spaces: Vec<SpaceSummary>);
+    fn messages_upserted(&self, space: &str, messages: Vec<MessageView>);
+    fn messages_deleted(&self, space: &str, names: Vec<String>);
+    fn status(&self, status: SyncStatus);
+    fn auth(&self, state: AuthState);
+    fn notify(&self, n: Notification);
+    fn badge(&self, count: u32);
+}
+
+#[derive(Default)]
+struct Focus {
+    space: Option<String>,
+    thread: Option<String>,
+    window_focused: bool,
+}
+
+pub struct Engine {
+    pub db: Db,
+    chat: Arc<dyn ChatApi>,
+    people: Arc<dyn PeopleApi>,
+    events: Option<EventsClient>,
+    tokens: Option<Arc<TokenManager>>,
+    sink: Arc<dyn Sink>,
+    me: StdMutex<String>,
+    focus: StdMutex<Focus>,
+    status: StdMutex<SyncStatus>,
+    sync_lock: Mutex<()>,
+    wake: Notify,
+    read_marks: StdMutex<HashMap<String, Micros>>,
+}
+
+impl Engine {
+    pub fn new(
+        db: Db,
+        chat: Arc<dyn ChatApi>,
+        people: Arc<dyn PeopleApi>,
+        events: Option<EventsClient>,
+        tokens: Option<Arc<TokenManager>>,
+        sink: Arc<dyn Sink>,
+    ) -> Arc<Self> {
+        let me = db
+            .with(|c| read::account(c))
+            .ok()
+            .flatten()
+            .map(|a| a.id)
+            .unwrap_or_default();
+        Arc::new(Self {
+            db,
+            chat,
+            people,
+            events,
+            tokens,
+            sink,
+            me: StdMutex::new(me),
+            focus: StdMutex::new(Focus::default()),
+            status: StdMutex::new(SyncStatus {
+                state: "starting".into(),
+                detail: None,
+            }),
+            sync_lock: Mutex::new(()),
+            wake: Notify::new(),
+            read_marks: StdMutex::new(HashMap::new()),
+        })
+    }
+
+    pub fn me(&self) -> String {
+        self.me.lock().unwrap().clone()
+    }
+
+    fn set_status(&self, state: &str, detail: Option<String>) {
+        let s = SyncStatus {
+            state: state.into(),
+            detail,
+        };
+        let mut cur = self.status.lock().unwrap();
+        if *cur != s {
+            *cur = s.clone();
+            drop(cur);
+            self.sink.status(s);
+        }
+    }
+
+    pub fn sync_status(&self) -> SyncStatus {
+        self.status.lock().unwrap().clone()
+    }
+
+    // ---------------------------------------------------------------- auth
+
+    pub fn auth_state(&self) -> AuthState {
+        let signed_in = self.tokens.as_ref().is_some_and(|t| t.has_refresh_token());
+        match (signed_in, self.db.with(|c| read::account(c)).ok().flatten()) {
+            (true, Some(a)) => AuthState::SignedIn {
+                email: a.email,
+                name: a.display_name,
+                user: a.id,
+            },
+            (true, None) => AuthState::SigningIn,
+            _ => AuthState::SignedOut,
+        }
+    }
+
+    pub async fn login(self: &Arc<Self>, open: impl FnOnce(&str) -> Result<()>) -> Result<()> {
+        let tokens = self.tokens.clone().ok_or(Error::NoOAuthClient)?;
+        self.sink.auth(AuthState::SigningIn);
+        if let Err(e) = tokens.login(open).await {
+            self.sink.auth(self.auth_state());
+            return Err(e);
+        }
+        self.ensure_identity().await?;
+        self.sink.auth(self.auth_state());
+        self.wake.notify_one();
+        Ok(())
+    }
+
+    pub async fn logout(&self) -> Result<()> {
+        let _g = self.sync_lock.lock().await;
+        if let (Some(ev), Some(device)) = (&self.events, self.db.with(|c| kv_get(c, "device_id"))?) {
+            if let Err(e) = ev.delete_pubsub(&device).await {
+                tracing::warn!("could not delete device subscription: {e}");
+            }
+        }
+        if let Some(t) = &self.tokens {
+            t.logout().await?;
+        }
+        self.db.wipe()?;
+        *self.me.lock().unwrap() = String::new();
+        self.sink.spaces_changed(vec![]);
+        self.sink.auth(AuthState::SignedOut);
+        self.sink.badge(0);
+        self.set_status("authRequired", None);
+        Ok(())
+    }
+
+    async fn ensure_identity(&self) -> Result<String> {
+        let p = self.people.me().await?;
+        let id = p.user.clone();
+        self.db
+            .call(move |c| {
+                write::set_account(c, &p.user, p.email.as_deref(), p.display_name.as_deref())?;
+                write::upsert_person(c, &p, ts::now())
+            })
+            .await?;
+        *self.me.lock().unwrap() = id.clone();
+        Ok(id)
+    }
+
+    // ---------------------------------------------------------------- main loop
+
+    /// Runs forever: sign-in gate, bootstrap or reconcile, then the live loop.
+    pub async fn run(self: Arc<Self>) {
+        let mut backoff = Duration::from_secs(2);
+        loop {
+            let signed_in = self.tokens.as_ref().is_some_and(|t| t.has_refresh_token());
+            if !signed_in {
+                self.set_status("authRequired", None);
+                self.sink.auth(AuthState::SignedOut);
+                self.wake.notified().await;
+                continue;
+            }
+            match self.session().await {
+                Ok(()) => backoff = Duration::from_secs(2),
+                Err(Error::AuthRequired) => {
+                    self.sink.auth(AuthState::SignedOut);
+                    self.set_status("authRequired", None);
+                    continue;
+                }
+                Err(e) => {
+                    let offline = e.is_offline();
+                    tracing::warn!("sync session ended: {e}");
+                    self.set_status(
+                        if offline { "offline" } else { "error" },
+                        Some(if offline { "No connection".into() } else { short(&e) }),
+                    );
+                    tokio::select! {
+                        _ = tokio::time::sleep(backoff) => {}
+                        _ = self.wake.notified() => {}
+                    }
+                    backoff = (backoff * 2).min(Duration::from_secs(120));
+                }
+            }
+        }
+    }
+
+    async fn session(self: &Arc<Self>) -> Result<()> {
+        if self.me().is_empty() {
+            self.ensure_identity().await?;
+        }
+        let bootstrapped = self.db.with(|c| kv_get(c, "bootstrapped"))?.is_some();
+        if bootstrapped {
+            self.reconcile().await?;
+        } else {
+            self.bootstrap().await?;
+        }
+        self.live().await
+    }
+
+    /// Ask the loop to reconcile now (wake from sleep, network back, manual refresh).
+    pub fn poke(&self) {
+        self.wake.notify_one();
+    }
+
+    // ---------------------------------------------------------------- bootstrap / reconcile
+
+    pub async fn bootstrap(self: &Arc<Self>) -> Result<()> {
+        let _g = self.sync_lock.lock().await;
+        self.set_status("bootstrapping", Some("Loading spaces".into()));
+        let spaces = self.refresh_space_list().await?;
+        let total = spaces.len();
+        let me = self.me();
+        let mut done = 0usize;
+        let mut stream = futures::stream::iter(spaces.into_iter().map(|s| {
+            let this = self.clone();
+            let me = me.clone();
+            async move { this.initial_fetch(&s, &me).await.map(|_| s) }
+        }))
+        .buffer_unordered(4);
+        while let Some(r) = stream.next().await {
+            done += 1;
+            match r {
+                Ok(_) => {}
+                Err(e @ Error::AuthRequired) => return Err(e),
+                Err(e) => tracing::warn!("initial fetch failed: {e}"),
+            }
+            self.set_status("bootstrapping", Some(format!("Synced {done} of {total} conversations")));
+            self.emit_spaces();
+        }
+        drop(stream);
+        self.resolve_users().await?;
+        self.db.with(|c| kv_set(c, "bootstrapped", "1"))?;
+        self.emit_spaces();
+        Ok(())
+    }
+
+    /// Lists all spaces, upserts them, drops local spaces the user left. Returns names,
+    /// most recently active first.
+    async fn refresh_space_list(&self) -> Result<Vec<String>> {
+        let mut all = Vec::new();
+        let mut token: Option<String> = None;
+        loop {
+            let page = self.chat.list_spaces(token.as_deref()).await?;
+            token = page.next().map(str::to_owned);
+            all.extend(page.items);
+            if token.is_none() {
+                break;
+            }
+        }
+        all.retain(|s| s.single_user_bot_dm != Some(true));
+        all.sort_by_key(|s| std::cmp::Reverse(s.last_active_time.as_deref().and_then(ts::parse).unwrap_or(0)));
+        let names: Vec<String> = all.iter().map(|s| s.name.clone()).collect();
+        let keep: BTreeSet<String> = names.iter().cloned().collect();
+        self.db
+            .call(move |c| {
+                let tx = c.transaction()?;
+                for s in &all {
+                    write::upsert_space(&tx, s)?;
+                }
+                for local in read::space_names(&tx)? {
+                    if !keep.contains(&local) {
+                        write::delete_space(&tx, &local)?;
+                    }
+                }
+                tx.commit()?;
+                Ok(())
+            })
+            .await?;
+        Ok(names)
+    }
+
+    /// Latest messages, members and read state of one space.
+    async fn initial_fetch(&self, space: &str, me: &str) -> Result<()> {
+        let started = ts::now();
+        let page = self
+            .chat
+            .list_messages(
+                space,
+                &ListMessages {
+                    page_size: INITIAL_PAGE,
+                    newest_first: true,
+                    ..Default::default()
+                },
+            )
+            .await?;
+        let complete = page.next().is_none();
+        let read_state = self.chat.get_space_read_state(space).await.ok();
+        let members = self.all_members(space).await.unwrap_or_default();
+        let mut events: Vec<Event> = page.items.into_iter().map(Event::MessageUpserted).collect();
+        if let Some(rs) = read_state {
+            events.push(Event::SpaceReadState(rs));
+        }
+        let (space_owned, me_owned) = (space.to_owned(), me.to_owned());
+        let applied = self
+            .db
+            .call(move |c| {
+                let tx = c.transaction()?;
+                let a = apply(&tx, &events, &me_owned)?;
+                write::clear_memberships(&tx, &space_owned)?;
+                let mut peer = None;
+                for m in &members {
+                    if let Some(u) = &m.member {
+                        write::upsert_membership(&tx, &space_owned, u, m.role.as_deref())?;
+                        if u.name != me_owned && u.kind.as_deref() != Some("BOT") {
+                            peer.get_or_insert(u.name.clone());
+                        }
+                    }
+                }
+                if let Some(p) = peer {
+                    write::set_dm_peer(&tx, &space_owned, &p)?;
+                }
+                if complete {
+                    write::set_history_complete(&tx, &space_owned)?;
+                }
+                write::set_space_synced(&tx, &space_owned, started)?;
+                tx.commit()?;
+                Ok(a)
+            })
+            .await?;
+        self.after_apply(applied, false).await;
+        Ok(())
+    }
+
+    async fn all_members(&self, space: &str) -> Result<Vec<crate::chat::Membership>> {
+        let mut out = Vec::new();
+        let mut token: Option<String> = None;
+        loop {
+            let page = self.chat.list_members(space, token.as_deref()).await?;
+            token = page.next().map(str::to_owned);
+            out.extend(page.items);
+            if token.is_none() || out.len() > 5000 {
+                return Ok(out);
+            }
+        }
+    }
+
+    /// Closes gaps: new and changed spaces, missed events, read state.
+    pub async fn reconcile(self: &Arc<Self>) -> Result<()> {
+        let _g = self.sync_lock.lock().await;
+        self.set_status("reconciling", None);
+        let started = ts::now();
+        let me = self.me();
+        self.refresh_space_list().await?;
+        let rows = self.db.call({
+            let me = me.clone();
+            move |c| read::spaces(c, &me)
+        })
+        .await?;
+        for s in rows {
+            let changed = match (s.last_synced_us, s.last_active_us) {
+                (None, _) => true,
+                (Some(synced), Some(active)) => active > synced,
+                (Some(_), None) => false,
+            };
+            let result = if !changed {
+                if s.unread > 0 {
+                    self.refresh_read_state(&s.name).await
+                } else {
+                    Ok(())
+                }
+            } else {
+                match s.last_synced_us {
+                    Some(since) if started - since < EVENT_RETENTION => {
+                        match self.replay_events(&s.name, since - MINUTE, &me, started).await {
+                            Err(e) if e.http_status() == Some(400) => self.initial_fetch(&s.name, &me).await,
+                            r => r,
+                        }
+                    }
+                    _ => self.initial_fetch(&s.name, &me).await,
+                }
+            };
+            match result {
+                Err(e @ Error::AuthRequired) => return Err(e),
+                Err(e) if e.is_offline() => return Err(e),
+                Err(e) => tracing::warn!(space = %s.name, "reconcile failed: {e}"),
+                Ok(()) => {}
+            }
+        }
+        self.resolve_users().await?;
+        self.emit_spaces();
+        Ok(())
+    }
+
+    async fn replay_events(&self, space: &str, since: Micros, me: &str, started: Micros) -> Result<()> {
+        let start = ts::format(since);
+        let mut token: Option<String> = None;
+        let mut events = Vec::new();
+        loop {
+            let page = self.chat.list_space_events(space, &start, token.as_deref()).await?;
+            token = page.next().map(str::to_owned);
+            for e in &page.items {
+                events.extend(decode_space_event(e));
+            }
+            if token.is_none() {
+                break;
+            }
+        }
+        let read_state = self.chat.get_space_read_state(space).await.ok();
+        if let Some(rs) = read_state {
+            events.push(Event::SpaceReadState(rs));
+        }
+        let (space_owned, me_owned) = (space.to_owned(), me.to_owned());
+        let applied = self
+            .db
+            .call(move |c| {
+                let tx = c.transaction()?;
+                let a = apply(&tx, &events, &me_owned)?;
+                write::set_space_synced(&tx, &space_owned, started)?;
+                tx.commit()?;
+                Ok(a)
+            })
+            .await?;
+        self.after_apply(applied, false).await;
+        Ok(())
+    }
+
+    async fn refresh_read_state(&self, space: &str) -> Result<()> {
+        let rs = self.chat.get_space_read_state(space).await?;
+        let me = self.me();
+        let applied = self
+            .db
+            .call(move |c| apply(c, &[Event::SpaceReadState(rs)], &me))
+            .await?;
+        self.after_apply(applied, false).await;
+        Ok(())
+    }
+
+    /// Names for users seen only as IDs (DM peers, members).
+    async fn resolve_users(&self) -> Result<()> {
+        for _ in 0..10 {
+            let pending = self.db.call(|c| read::unresolved_users(c, 200)).await?;
+            if pending.is_empty() {
+                return Ok(());
+            }
+            let found = match self.people.resolve(&pending).await {
+                Ok(f) => f,
+                Err(e @ Error::AuthRequired) => return Err(e),
+                Err(e) => {
+                    tracing::warn!("people lookup failed: {e}");
+                    vec![]
+                }
+            };
+            self.db
+                .call(move |c| {
+                    let tx = c.transaction()?;
+                    let now = ts::now();
+                    for p in &found {
+                        write::upsert_person(&tx, p, now)?;
+                    }
+                    write::mark_resolved(&tx, &pending, now)?;
+                    tx.commit()?;
+                    Ok(())
+                })
+                .await?;
+        }
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------- live
+
+    async fn device_id(&self) -> Result<String> {
+        self.db
+            .call(|c| match kv_get(c, "device_id")? {
+                Some(d) => Ok(d),
+                None => {
+                    let d = uuid::Uuid::new_v4().simple().to_string()[..12].to_owned();
+                    kv_set(c, "device_id", &d)?;
+                    Ok(d)
+                }
+            })
+            .await
+    }
+
+    async fn ensure_subscriptions(&self) -> Result<String> {
+        let ev = self.events.as_ref().ok_or_else(|| Error::Other("no events client".into()))?;
+        let device = self.device_id().await?;
+        let sub = ev.ensure_pubsub(&device).await?;
+        ev.ensure_subscription(SPACES_TARGET, SPACES_EVENT_TYPES, true).await?;
+        if let Err(e) = ev.ensure_subscription(&user_target(&self.me()), USER_EVENT_TYPES, true).await {
+            tracing::info!("user subscription with resource failed ({e}); retrying without");
+            ev.ensure_subscription(&user_target(&self.me()), USER_EVENT_TYPES, false).await?;
+        }
+        Ok(sub)
+    }
+
+    async fn live(self: &Arc<Self>) -> Result<()> {
+        let Some(ev) = &self.events else {
+            self.set_status("live", None);
+            self.wake.notified().await;
+            return Ok(());
+        };
+        let sub = self.ensure_subscriptions().await?;
+        self.set_status("live", None);
+        let mut renewed = Instant::now();
+        let mut reconciled = Instant::now();
+        loop {
+            let wall_before = SystemTime::now();
+            let mono_before = Instant::now();
+            let batch = tokio::select! {
+                r = ev.pull(&sub, 100) => r,
+                _ = self.wake.notified() => {
+                    self.reconcile().await?;
+                    self.set_status("live", None);
+                    continue;
+                }
+            };
+            // Wall clock jumping far past monotonic time means the machine slept.
+            let wall = SystemTime::now().duration_since(wall_before).unwrap_or_default();
+            let slept = wall > mono_before.elapsed() + Duration::from_secs(60);
+            let batch = match batch {
+                Ok(b) => b,
+                Err(e) if e.is_status("NOT_FOUND") => {
+                    tracing::warn!("device subscription vanished; recreating");
+                    return Ok(());
+                }
+                Err(e) => return Err(e),
+            };
+            if !batch.is_empty() {
+                let mut events = Vec::new();
+                let mut lifecycle = Vec::new();
+                for r in &batch {
+                    for e in r.decode() {
+                        match e {
+                            Event::Lifecycle { kind, subscription } => lifecycle.push((kind, subscription)),
+                            Event::Unknown(t) => tracing::debug!("ignoring event {t}"),
+                            e => events.push(e),
+                        }
+                    }
+                }
+                let me = self.me();
+                let applied = self
+                    .db
+                    .call(move |c| {
+                        let tx = c.transaction()?;
+                        let a = apply(&tx, &events, &me)?;
+                        tx.commit()?;
+                        Ok(a)
+                    })
+                    .await?;
+                // Ack only after the commit.
+                let acks: Vec<String> = batch.iter().map(|r| r.ack_id.clone()).collect();
+                ev.ack(&sub, &acks).await?;
+                self.after_apply(applied, true).await;
+                for (kind, name) in lifecycle {
+                    tracing::info!(%kind, %name, "subscription lifecycle event");
+                    match kind.as_str() {
+                        "expirationReminder" => {
+                            ev.renew(&name).await.ok();
+                        }
+                        "expired" | "suspended" => {
+                            self.ensure_subscriptions().await?;
+                            self.reconcile().await?;
+                            self.set_status("live", None);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            if slept || reconciled.elapsed() > RECONCILE_EVERY {
+                if slept {
+                    tracing::info!("wake from sleep detected");
+                    self.ensure_subscriptions().await?;
+                }
+                self.reconcile().await?;
+                self.set_status("live", None);
+                reconciled = Instant::now();
+            }
+            if renewed.elapsed() > RENEW_EVERY {
+                self.ensure_subscriptions().await?;
+                renewed = Instant::now();
+            }
+        }
+    }
+
+    /// Follow-ups after a commit: reaction refetches, new spaces, UI events, notifications.
+    async fn after_apply(&self, applied: Applied, live: bool) {
+        if applied.is_empty() {
+            return;
+        }
+        let mut applied = applied;
+        // Reaction events do not carry the new summary: refetch the messages (REST is truth).
+        for name in std::mem::take(&mut applied.stale_reactions) {
+            match self.chat.get_message(&name).await {
+                Ok(m) => {
+                    let me = self.me();
+                    let space = m.space_name();
+                    if let Ok(a) = self.db.call(move |c| apply(c, &[Event::MessageUpserted(m)], &me)).await {
+                        applied.upserted.extend(a.upserted);
+                    }
+                    applied.spaces.insert(space);
+                }
+                Err(e) => tracing::debug!("reaction refetch failed: {e}"),
+            }
+        }
+        for space in std::mem::take(&mut applied.joined_spaces) {
+            if let Ok(s) = self.chat.get_space(&space).await {
+                let me = self.me();
+                let _ = self.db.call(move |c| write::upsert_space(c, &s)).await;
+                // Boxed: initial_fetch calls back into after_apply.
+                let _ = Box::pin(self.initial_fetch(&space, &me)).await;
+            }
+        }
+
+        let mut by_space: HashMap<String, Vec<String>> = HashMap::new();
+        for (space, name) in &applied.upserted {
+            by_space.entry(space.clone()).or_default().push(name.clone());
+        }
+        for (space, names) in by_space {
+            if let Ok(views) = self.message_views_by_name(&names) {
+                self.sink.messages_upserted(&space, views);
+            }
+        }
+        let mut deleted: HashMap<String, Vec<String>> = HashMap::new();
+        for (space, name) in &applied.deleted {
+            deleted.entry(space.clone()).or_default().push(name.clone());
+        }
+        for (space, names) in deleted {
+            self.sink.messages_deleted(&space, names);
+        }
+        if live {
+            self.notify_new(&applied.inserted);
+        }
+        self.emit_spaces();
+    }
+
+    fn notify_new(&self, inserted: &[String]) {
+        if inserted.is_empty() {
+            return;
+        }
+        let me = self.me();
+        let (focused_space, window_focused) = {
+            let f = self.focus.lock().unwrap();
+            (f.space.clone(), f.window_focused)
+        };
+        let names = inserted.to_vec();
+        let Ok((rows, spaces, users)) = self.db.with(|c| {
+            let rows = read::messages_by_name(c, &names)?;
+            let spaces = read::spaces(c, &me)?;
+            let senders: Vec<String> = rows.iter().map(|r| r.sender.clone()).collect();
+            Ok((rows, spaces, read::users(c, &senders)?))
+        }) else {
+            return;
+        };
+        let now = ts::now();
+        let b = Builder { me: &me, users: &users };
+        for r in rows {
+            let Some(space) = spaces.iter().find(|s| s.name == r.space) else { continue };
+            let is_dm = space.space_type == "DIRECT_MESSAGE";
+            let fresh = now - r.create_us < 5 * MINUTE;
+            let open_here = window_focused && focused_space.as_deref() == Some(r.space.as_str());
+            if r.sender == me || space.muted || !fresh || open_here || r.delete_us.is_some() {
+                continue;
+            }
+            if !(is_dm || r.mentions_me) {
+                continue;
+            }
+            let view = b.message(&r, None, &[], None);
+            let sender = view.sender.display_name.clone();
+            let title = if is_dm {
+                sender.clone()
+            } else {
+                let summary = b.space(space, &[], None);
+                format!("{sender} in {}", summary.display_name)
+            };
+            let mut body = render::plain(&view.blocks);
+            if body.is_empty() && !view.attachments.is_empty() {
+                body = "Sent an attachment".into();
+            }
+            if body.chars().count() > 180 {
+                body = body.chars().take(177).collect::<String>() + "…";
+            }
+            self.sink.notify(Notification {
+                title,
+                body,
+                space: r.space.clone(),
+                message: r.name.clone(),
+                thread: r.thread.clone(),
+            });
+        }
+    }
+
+    fn emit_spaces(&self) {
+        if let Ok(spaces) = self.list_spaces() {
+            let badge: u32 = spaces
+                .iter()
+                .filter(|s| !s.muted)
+                .map(|s| if s.kind == "dm" { s.unread } else { s.mentions })
+                .sum();
+            self.sink.badge(badge);
+            self.sink.spaces_changed(spaces);
+        }
+    }
+
+    // ---------------------------------------------------------------- reads (UI)
+
+    pub fn list_spaces(&self) -> Result<Vec<SpaceSummary>> {
+        let me = self.me();
+        self.db.with(|c| {
+            let rows = read::spaces(c, &me)?;
+            let users = read::all_users(c)?;
+            let b = Builder { me: &me, users: &users };
+            let mut out = Vec::with_capacity(rows.len());
+            for s in &rows {
+                let members = if s.display_name.is_none() && s.space_type != "DIRECT_MESSAGE" {
+                    read::member_names(c, &s.name)?
+                } else {
+                    vec![]
+                };
+                out.push(b.space(s, &members, s.space_uri.clone()));
+            }
+            out.sort_by_key(|s| std::cmp::Reverse(s.last_active_us));
+            Ok(out)
+        })
+    }
+
+    fn build_messages(&self, c: &Connection, rows: Vec<read::MessageRow>) -> Result<Vec<MessageView>> {
+        let me = self.me();
+        let mut user_names: Vec<String> = rows.iter().map(|r| r.sender.clone()).collect();
+        let threads: Vec<String> = rows.iter().filter(|r| !r.is_reply).filter_map(|r| r.thread.clone()).collect();
+        let stats = read::thread_stats(c, &threads, &me)?;
+        for s in stats.values() {
+            user_names.extend(s.participants.iter().cloned());
+        }
+        // Mentions can name anyone; the user table is small, so load it whole.
+        let users = read::all_users(c)?;
+        let names: Vec<String> = rows.iter().map(|r| r.name.clone()).collect();
+        let mine = read::my_reactions(c, &names)?;
+        let mut uris: HashMap<String, Option<String>> = HashMap::new();
+        let b = Builder { me: &me, users: &users };
+        let mut out = Vec::with_capacity(rows.len());
+        for r in &rows {
+            let uri = uris
+                .entry(r.space.clone())
+                .or_insert_with(|| {
+                    c.query_row("SELECT space_uri FROM space WHERE name = ?1", [&r.space], |x| x.get(0))
+                        .ok()
+                        .flatten()
+                })
+                .clone();
+            let st = r.thread.as_ref().and_then(|t| stats.get(t));
+            let my = mine.get(&r.name).map(Vec::as_slice).unwrap_or(&[]);
+            out.push(b.message(r, st, my, uri.as_deref()));
+        }
+        Ok(out)
+    }
+
+    fn message_views_by_name(&self, names: &[String]) -> Result<Vec<MessageView>> {
+        self.db.with(|c| {
+            let rows = read::messages_by_name(c, names)?;
+            // Replies changed: their roots' summaries changed too.
+            let mut roots: Vec<String> = Vec::new();
+            for r in rows.iter().filter(|r| r.is_reply) {
+                if let Some(t) = &r.thread {
+                    if let Some(root) = read::thread(c, t)?.into_iter().find(|m| !m.is_reply) {
+                        if !names.contains(&root.name) && !roots.contains(&root.name) {
+                            roots.push(root.name);
+                        }
+                    }
+                }
+            }
+            let mut rows = rows;
+            rows.extend(read::messages_by_name(c, &roots)?);
+            self.build_messages(c, rows)
+        })
+    }
+
+    pub fn get_messages(&self, space: &str, before_us: Option<Micros>, limit: u32) -> Result<Vec<MessageView>> {
+        self.db.with(|c| {
+            let rows = read::top_level(c, space, before_us, limit.clamp(1, 500))?;
+            self.build_messages(c, rows)
+        })
+    }
+
+    pub fn get_thread_cached(&self, thread: &str) -> Result<Vec<MessageView>> {
+        self.db.with(|c| {
+            let rows = read::thread(c, thread)?;
+            self.build_messages(c, rows)
+        })
+    }
+
+    /// Fetches all replies of a thread from the API into the cache, then emits them.
+    pub async fn fetch_thread(&self, thread: &str) -> Result<()> {
+        let space = crate::chat::space_of(thread);
+        let mut events = Vec::new();
+        let mut token: Option<String> = None;
+        loop {
+            let page = self
+                .chat
+                .list_messages(
+                    &space,
+                    &ListMessages {
+                        page_size: 1000,
+                        page_token: token.clone(),
+                        filter: Some(thread_filter(thread)),
+                        newest_first: false,
+                    },
+                )
+                .await?;
+            token = page.next().map(str::to_owned);
+            events.extend(page.items.into_iter().map(Event::MessageUpserted));
+            if token.is_none() {
+                break;
+            }
+        }
+        if let Ok(rs) = self.chat.get_thread_read_state(thread).await {
+            events.push(Event::ThreadReadState(rs));
+        }
+        let me = self.me();
+        let applied = self.db.call(move |c| {
+            let tx = c.transaction()?;
+            let a = apply(&tx, &events, &me)?;
+            tx.commit()?;
+            Ok(a)
+        })
+        .await?;
+        self.after_apply(applied, false).await;
+        Ok(())
+    }
+
+    /// Pages one batch of older history into the cache. Returns how many messages arrived.
+    pub async fn load_older(&self, space: &str) -> Result<u32> {
+        let space_owned = space.to_owned();
+        let (oldest, complete) = self
+            .db
+            .call(move |c| {
+                let oldest = read::oldest_synced(c, &space_owned)?;
+                let complete: bool = c
+                    .query_row("SELECT history_complete FROM space WHERE name = ?1", [&space_owned], |r| r.get(0))
+                    .unwrap_or(false);
+                Ok((oldest, complete))
+            })
+            .await?;
+        if complete {
+            return Ok(0);
+        }
+        let page = self
+            .chat
+            .list_messages(
+                space,
+                &ListMessages {
+                    page_size: OLDER_PAGE,
+                    newest_first: true,
+                    filter: oldest.map(|o| older_than_filter(&ts::format(o))),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        let n = page.items.len() as u32;
+        let done = page.next().is_none();
+        let events: Vec<Event> = page.items.into_iter().map(Event::MessageUpserted).collect();
+        let me = self.me();
+        let space_owned = space.to_owned();
+        self.db
+            .call(move |c| {
+                let tx = c.transaction()?;
+                apply(&tx, &events, &me)?;
+                if done {
+                    write::set_history_complete(&tx, &space_owned)?;
+                }
+                tx.commit()?;
+                Ok(())
+            })
+            .await?;
+        if done {
+            self.emit_spaces();
+        }
+        Ok(n)
+    }
+
+    pub fn list_members(&self, space: &str) -> Result<Vec<views::UserRef>> {
+        let me = self.me();
+        self.db.with(|c| {
+            let rows = read::members(c, space)?;
+            let users: HashMap<String, read::UserRow> = rows.iter().map(|u| (u.name.clone(), u.clone())).collect();
+            let b = Builder { me: &me, users: &users };
+            Ok(rows.iter().map(|u| b.user(&u.name)).collect())
+        })
+    }
+
+    pub fn search(&self, query: &str, limit: u32, offset: u32) -> Result<SearchResult> {
+        let (terms, filter) = parse_search(query);
+        let covered = self.db.with(|c| read::search_coverage(c))?;
+        if terms.is_empty() {
+            return Ok(SearchResult {
+                hits: vec![],
+                covered_from_us: covered,
+            });
+        }
+        let me = self.me();
+        self.db.with(|c| {
+            let rows = read::search(c, &terms, &filter, limit.clamp(1, 200), offset)?;
+            let (rows, snippets): (Vec<_>, Vec<_>) = rows.into_iter().unzip();
+            let views = self.build_messages(c, rows)?;
+            let spaces: HashMap<String, String> = {
+                let users = read::all_users(c)?;
+                let b = Builder { me: &me, users: &users };
+                read::spaces(c, &me)?
+                    .iter()
+                    .map(|s| {
+                        let members = if s.display_name.is_none() && s.space_type != "DIRECT_MESSAGE" {
+                            read::member_names(c, &s.name).unwrap_or_default()
+                        } else {
+                            vec![]
+                        };
+                        (s.name.clone(), b.space(s, &members, None).display_name)
+                    })
+                    .collect()
+            };
+            Ok(SearchResult {
+                hits: views
+                    .into_iter()
+                    .zip(snippets)
+                    .map(|(m, s)| SearchHit {
+                        space_name: spaces.get(&m.space).cloned().unwrap_or_default(),
+                        snippet: views::snippet_parts(&s),
+                        message: m,
+                    })
+                    .collect(),
+                covered_from_us: covered,
+            })
+        })
+    }
+
+    // ---------------------------------------------------------------- focus
+
+    pub fn set_focus(&self, space: Option<String>, thread: Option<String>, window_focused: bool) {
+        let mut f = self.focus.lock().unwrap();
+        f.space = space;
+        f.thread = thread;
+        f.window_focused = window_focused;
+    }
+
+    pub fn set_space_prefs(&self, space: &str, muted: Option<bool>, starred: Option<bool>) -> Result<()> {
+        self.db.with(|c| write::set_space_prefs(c, space, muted, starred))?;
+        self.emit_spaces();
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------- writes
+
+    pub async fn send_message(self: &Arc<Self>, space: &str, thread: Option<&str>, text: &str) -> Result<MessageView> {
+        let client_id = format!("client-{}", uuid::Uuid::new_v4().simple());
+        let me = self.me();
+        let (space_o, thread_o, text_o, cid) = (space.to_owned(), thread.map(str::to_owned), text.to_owned(), client_id.clone());
+        let name = self
+            .db
+            .call(move |c| write::insert_pending(c, &space_o, thread_o.as_deref(), &text_o, &cid, &me, ts::now()))
+            .await?;
+        let view = self
+            .message_views_by_name(std::slice::from_ref(&name))?
+            .into_iter()
+            .next()
+            .ok_or_else(|| Error::Other("pending message vanished".into()))?;
+        self.sink.messages_upserted(space, vec![view.clone()]);
+        let this = self.clone();
+        let (space, thread, text) = (space.to_owned(), thread.map(str::to_owned), text.to_owned());
+        tokio::spawn(async move {
+            this.deliver(&space, thread.as_deref(), &text, &client_id, &name).await;
+        });
+        Ok(view)
+    }
+
+    async fn deliver(&self, space: &str, thread: Option<&str>, text: &str, client_id: &str, pending: &str) {
+        match self.chat.create_message(space, text, thread, client_id).await {
+            Ok(mut m) => {
+                if m.client_assigned_message_id.is_none() {
+                    m.client_assigned_message_id = Some(client_id.to_owned());
+                }
+                let me = self.me();
+                if let Ok(a) = self.db.call(move |c| {
+                    let tx = c.transaction()?;
+                    let a = apply(&tx, &[Event::MessageUpserted(m)], &me)?;
+                    tx.commit()?;
+                    Ok(a)
+                }).await {
+                    // The pending row was renamed; tell the UI the old name is gone.
+                    self.sink.messages_deleted(space, vec![pending.to_owned()]);
+                    self.after_apply(a, false).await;
+                }
+            }
+            Err(e) => {
+                tracing::warn!("send failed: {e}");
+                let p = pending.to_owned();
+                let _ = self.db.call(move |c| write::set_local_state(c, &p, "failed")).await;
+                if let Ok(v) = self.message_views_by_name(&[pending.to_owned()]) {
+                    self.sink.messages_upserted(space, v);
+                }
+            }
+        }
+    }
+
+    /// Retries a failed send with its original client ID.
+    pub async fn retry_send(self: &Arc<Self>, pending: &str) -> Result<()> {
+        let p = pending.to_owned();
+        let row = self.db.call(move |c| read::message(c, &p)).await?.ok_or_else(|| Error::Other("not found".into()))?;
+        let client_id: Option<String> = {
+            let p = pending.to_owned();
+            self.db
+                .call(move |c| Ok(c.query_row("SELECT client_id FROM message WHERE name = ?1", [&p], |r| r.get(0))?))
+                .await?
+        };
+        let client_id = client_id.ok_or_else(|| Error::Other("no client id".into()))?;
+        let p = pending.to_owned();
+        self.db.call(move |c| write::set_local_state(c, &p, "pending")).await?;
+        if let Ok(v) = self.message_views_by_name(&[pending.to_owned()]) {
+            self.sink.messages_upserted(&row.space, v);
+        }
+        let this = self.clone();
+        let pending = pending.to_owned();
+        tokio::spawn(async move {
+            let text = row.text.clone().unwrap_or_default();
+            this.deliver(&row.space, row.thread.as_deref(), &text, &client_id, &pending).await;
+        });
+        Ok(())
+    }
+
+    pub async fn discard_failed(&self, pending: &str) -> Result<()> {
+        let p = pending.to_owned();
+        let row = self.db.call(move |c| read::message(c, &p)).await?;
+        if let Some(r) = row.filter(|r| r.local_state == "failed") {
+            let n = r.name.clone();
+            self.db.call(move |c| write::delete_row(c, &n)).await?;
+            self.sink.messages_deleted(&r.space, vec![r.name]);
+        }
+        Ok(())
+    }
+
+    pub async fn edit_message(&self, name: &str, text: &str) -> Result<()> {
+        let n = name.to_owned();
+        let old = self.db.call(move |c| read::message(c, &n)).await?.ok_or_else(|| Error::Other("not found".into()))?;
+        let (n, t) = (name.to_owned(), text.to_owned());
+        self.db.call(move |c| write::set_text_local(c, &n, &t)).await?;
+        self.emit_messages(&old.space, &[name.to_owned()]);
+        match self.chat.update_message_text(name, text).await {
+            Ok(m) => {
+                let me = self.me();
+                let a = self.db.call(move |c| apply(c, &[Event::MessageUpserted(m)], &me)).await?;
+                self.after_apply(a, false).await;
+                Ok(())
+            }
+            Err(e) => {
+                let n = name.to_owned();
+                let (ot, of) = (old.text.clone(), old.formatted_text.clone());
+                self.db
+                    .call(move |c| {
+                        c.execute(
+                            "UPDATE message SET text = ?2, formatted_text = ?3 WHERE name = ?1",
+                            rusqlite::params![n, ot, of],
+                        )?;
+                        Ok(())
+                    })
+                    .await?;
+                self.emit_messages(&old.space, &[name.to_owned()]);
+                Err(e)
+            }
+        }
+    }
+
+    pub async fn delete_message(&self, name: &str) -> Result<()> {
+        if name.starts_with("pending:") {
+            return self.discard_failed(name).await;
+        }
+        self.chat.delete_message(name).await?;
+        let n = name.to_owned();
+        let me = self.me();
+        let a = self
+            .db
+            .call(move |c| {
+                apply(
+                    c,
+                    &[Event::MessageDeleted {
+                        name: n,
+                        delete_time: Some(ts::format(ts::now())),
+                    }],
+                    &me,
+                )
+            })
+            .await?;
+        // Deleted messages stay as a "Message deleted" row; re-emit it as an upsert.
+        let names: Vec<String> = a.deleted.iter().map(|(_, n)| n.clone()).collect();
+        let space = crate::chat::space_of(name);
+        self.emit_messages(&space, &names);
+        self.emit_spaces();
+        Ok(())
+    }
+
+    pub async fn toggle_reaction(&self, message: &str, emoji: &str) -> Result<()> {
+        let emoji = Emoji::unicode(emoji);
+        let key = emoji.key();
+        let (m, k) = (message.to_owned(), key.clone());
+        let (existing, summaries) = self
+            .db
+            .call(move |c| {
+                let existing = read::my_reaction_name(c, &m, &k)?;
+                let row = read::message(c, &m)?;
+                Ok((existing, row.and_then(|r| r.reactions)))
+            })
+            .await?;
+        let mut sums: Vec<EmojiReactionSummary> =
+            summaries.as_deref().and_then(|s| serde_json::from_str(s).ok()).unwrap_or_default();
+        let adding = existing.is_none();
+        match sums.iter_mut().find(|s| s.emoji.key() == key) {
+            Some(s) => {
+                let n = s.reaction_count.unwrap_or(0) as i64 + if adding { 1 } else { -1 };
+                s.reaction_count = Some(n.max(0) as u32);
+            }
+            None if adding => sums.push(EmojiReactionSummary {
+                emoji: emoji.clone(),
+                reaction_count: Some(1),
+            }),
+            None => {}
+        }
+        sums.retain(|s| s.reaction_count.unwrap_or(0) > 0);
+        let json = serde_json::to_string(&sums)?;
+        let (m, k) = (message.to_owned(), key.clone());
+        self.db
+            .call(move |c| {
+                write::set_reactions(c, &m, &json)?;
+                if adding {
+                    write::set_my_reaction(c, &m, &k, "pending")
+                } else {
+                    write::clear_my_reaction(c, &m, &k)
+                }
+            })
+            .await?;
+        let space = crate::chat::space_of(message);
+        self.emit_messages(&space, &[message.to_owned()]);
+
+        let result = if adding {
+            self.chat.create_reaction(message, &emoji).await.map(|r| Some(r.name))
+        } else {
+            match existing.as_deref() {
+                Some(n) if n != "pending" => self.chat.delete_reaction(n).await.map(|_| None),
+                _ => Ok(None),
+            }
+        };
+        let (m, k) = (message.to_owned(), key.clone());
+        match &result {
+            Ok(Some(rname)) => {
+                let r = rname.clone();
+                self.db.call(move |c| write::set_my_reaction(c, &m, &k, &r)).await?;
+            }
+            Ok(None) => {}
+            Err(_) => {
+                if adding {
+                    self.db.call(move |c| write::clear_my_reaction(c, &m, &k)).await?;
+                }
+            }
+        }
+        // Truth from the server either way.
+        if let Ok(fresh) = self.chat.get_message(message).await {
+            let me = self.me();
+            let a = self.db.call(move |c| apply(c, &[Event::MessageUpserted(fresh)], &me)).await?;
+            self.after_apply(a, false).await;
+        }
+        result.map(|_| ())
+    }
+
+    /// Marks a space read up to `up_to` locally now and at Google after a 1 s debounce.
+    pub async fn mark_read(self: &Arc<Self>, space: &str, up_to: Micros) -> Result<()> {
+        let s = space.to_owned();
+        let current = self.db.call(move |c| read::space_read(c, &s)).await?;
+        if current.is_some_and(|c| c >= up_to) {
+            return Ok(());
+        }
+        let s = space.to_owned();
+        self.db.call(move |c| write::set_space_read(c, &s, Some(up_to))).await?;
+        self.emit_spaces();
+        self.read_marks.lock().unwrap().insert(space.to_owned(), up_to);
+        let this = self.clone();
+        let space = space.to_owned();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            let Some(at) = this.read_marks.lock().unwrap().remove(&space) else { return };
+            if let Err(e) = this.chat.update_space_read_state(&space, &ts::format(at + 1)).await {
+                tracing::warn!("mark read failed: {e}");
+            }
+        });
+        Ok(())
+    }
+
+    /// Local only: the Chat API has no thread read-state update (see api-findings.md).
+    pub async fn mark_thread_read(&self, thread: &str, up_to: Micros) -> Result<()> {
+        let t = thread.to_owned();
+        self.db.call(move |c| write::set_thread_read(c, &t, Some(up_to))).await?;
+        Ok(())
+    }
+
+    fn emit_messages(&self, space: &str, names: &[String]) {
+        if let Ok(v) = self.message_views_by_name(names) {
+            self.sink.messages_upserted(space, v);
+        }
+    }
+
+    /// Bytes for an attachment, from the disk cache or the API.
+    pub async fn media(&self, cache_dir: &std::path::Path, resource: &str) -> Result<(Vec<u8>, Option<String>)> {
+        use sha2::{Digest, Sha256};
+        let key = format!("{:x}", Sha256::digest(resource.as_bytes()));
+        let path = cache_dir.join(&key);
+        let r = resource.to_owned();
+        let cached: Option<Option<String>> = self
+            .db
+            .call(move |c| {
+                Ok(c.query_row("SELECT mime FROM media_cache WHERE resource = ?1", [&r], |x| x.get(0))
+                    .ok())
+            })
+            .await?;
+        if let Some(mime) = cached {
+            if let Ok(bytes) = tokio::fs::read(&path).await {
+                let r = resource.to_owned();
+                let p = path.to_string_lossy().to_string();
+                let len = bytes.len() as i64;
+                let m = mime.clone();
+                let _ = self.db.call(move |c| write::touch_media(c, &r, &p, m.as_deref(), len, ts::now())).await;
+                return Ok((bytes, mime));
+            }
+        }
+        let (bytes, mime) = self.chat.download_media(resource).await?;
+        tokio::fs::create_dir_all(cache_dir).await?;
+        tokio::fs::write(&path, &bytes).await?;
+        let r = resource.to_owned();
+        let p = path.to_string_lossy().to_string();
+        let len = bytes.len() as i64;
+        let m = mime.clone();
+        self.db.call(move |c| write::touch_media(c, &r, &p, m.as_deref(), len, ts::now())).await?;
+        Ok((bytes, mime))
+    }
+
+    pub fn last_own_message(&self, space: &str, thread: Option<&str>) -> Result<Option<MessageView>> {
+        let me = self.me();
+        let row = self.db.with(|c| read::last_own(c, space, thread, &me))?;
+        match row {
+            Some(r) => Ok(self.message_views_by_name(&[r.name])?.into_iter().next()),
+            None => Ok(None),
+        }
+    }
+
+    pub fn message_view(&self, name: &str) -> Result<Option<MessageView>> {
+        Ok(self.message_views_by_name(&[name.to_owned()])?.into_iter().next())
+    }
+}
+
+fn short(e: &Error) -> String {
+    let s = e.to_string();
+    if s.chars().count() > 120 { s.chars().take(117).collect::<String>() + "…" } else { s }
+}
+
+/// `from:ada in:tech before:2024-06-01 after:2024-01-01 words` -> FTS query + filters.
+pub fn parse_search(q: &str) -> (String, SearchFilter) {
+    let mut f = SearchFilter::default();
+    let mut terms = Vec::new();
+    for tok in q.split_whitespace() {
+        let (k, v) = tok.split_once(':').unwrap_or(("", tok));
+        match k {
+            "from" if !v.is_empty() => f.from = Some(v.to_owned()),
+            "in" if !v.is_empty() => f.space = Some(v.to_owned()),
+            "before" => f.before_us = date_us(v),
+            "after" => f.after_us = date_us(v),
+            _ => {
+                // Quote each term so FTS syntax characters in user input are literal; prefix
+                // match the last one so results appear while typing.
+                let clean: String = tok.chars().filter(|c| *c != '"').collect();
+                if !clean.is_empty() {
+                    terms.push(format!("\"{clean}\""));
+                }
+            }
+        }
+    }
+    if let Some(last) = terms.last_mut() {
+        last.push('*');
+    }
+    (terms.join(" "), f)
+}
+
+fn date_us(s: &str) -> Option<Micros> {
+    ts::parse(&format!("{s}T00:00:00Z"))
+}
+
+#[cfg(test)]
+mod tests;

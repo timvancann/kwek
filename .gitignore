@@ -1,0 +1,7 @@
+secrets/
+client_secret_*.json
+node_modules/
+target/
+dist/
+.DS_Store
+src-tauri/gen/
