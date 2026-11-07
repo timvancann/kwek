@@ -40,7 +40,10 @@ export function ago(us: number): string {
   const s = (Date.now() - us / 1000) / 1000;
   if (s < 60) return "just now";
   if (s < 3600) return `${Math.floor(s / 60)} min ago`;
-  if (s < 86_400) return `${Math.floor(s / 3600)} h ago`;
+  if (s < 86_400) {
+    const h = Math.floor(s / 3600);
+    return `${h} ${h === 1 ? "hour" : "hours"} ago`;
+  }
   return dayLabel(us).toLowerCase() === "yesterday" ? "yesterday" : dayLabel(us);
 }
 

@@ -13,7 +13,7 @@
   let error = $state("");
   let active = $state(0);
   let timer: ReturnType<typeof setTimeout> | undefined;
-  let listEl: HTMLUListElement | undefined = $state();
+  let listEl: HTMLDivElement | undefined = $state();
 
   $effect(() => {
     open = app.overlay === "search";
@@ -29,6 +29,10 @@
         result = await api.search(query, 60);
         error = "";
         active = 0;
+        if (query.trim()) {
+          const n = result.hits.length;
+          app.say(n === 0 ? "No messages match" : `${n}${n === 60 ? " or more" : ""} ${n === 1 ? "result" : "results"}`);
+        }
       } catch (e) {
         error = errorText(e);
       }
@@ -89,31 +93,33 @@
         spellcheck="false"
       />
     </div>
-    <ul id="search-results" bind:this={listEl} role="listbox" aria-label="Results" class="m-0 max-h-[60vh] list-none overflow-y-auto p-1">
-      {#if error}
-        <li class="px-3 py-6 text-center text-destructive" role="alert">{error}</li>
-      {:else if query.trim() && result && flat.length === 0}
-        <li class="px-3 py-6 text-center text-muted-foreground">No messages match. Search covers synced history only.</li>
-      {:else if !query.trim()}
-        <li class="px-3 py-5 text-[12px] text-muted-foreground">
-          Filters: <code class="font-mono">from:name</code>, <code class="font-mono">in:space</code>,
-          <code class="font-mono">before:2026-11-01</code>, <code class="font-mono">after:2026-10-01</code>.
-        </li>
-      {/if}
-      {#each groups as g (g.space)}
-        <li role="presentation" class="px-2 pt-2 pb-1 text-[12px] font-semibold text-muted-foreground">{g.name}</li>
-        {#each g.hits as h (h.message.name)}
-          {@const i = flat.indexOf(h)}
-          <!-- Keyboard selection runs through the combobox input (arrows + Enter). -->
-          <!-- svelte-ignore a11y_click_events_have_key_events -->
-          <li
-            id="hit-{i}"
-            role="option"
-            aria-selected={i === active}
-            class={cn("flex cursor-default gap-2 rounded-md px-2 py-1.5", i === active && "bg-accent-soft")}
-            onmousemove={() => (active = i)}
-            onclick={() => pick(i)}
-          >
+    {#if error}
+      <p class="m-0 px-3 py-6 text-center text-destructive" role="alert">{error}</p>
+    {:else if query.trim() && result && flat.length === 0}
+      <p class="m-0 px-3 py-6 text-center text-muted-foreground">No messages match. Search covers synced history only.</p>
+    {:else if !query.trim()}
+      <p class="m-0 px-3 py-5 text-[12px] text-muted-foreground">
+        Filters: <code class="font-mono">from:name</code>, <code class="font-mono">in:space</code>,
+        <code class="font-mono">before:2026-11-01</code>, <code class="font-mono">after:2026-10-01</code>.
+      </p>
+    {/if}
+    <div id="search-results" bind:this={listEl} role="listbox" aria-label="Results" class="max-h-[60vh] overflow-y-auto p-1" class:hidden={!flat.length}>
+      {#each groups as g, gi (g.space)}
+        <div role="group" aria-labelledby="hit-group-{gi}">
+          <div id="hit-group-{gi}" class="px-2 pt-2 pb-1 text-[12px] font-semibold text-muted-foreground">{g.name}</div>
+          {#each g.hits as h (h.message.name)}
+            {@const i = flat.indexOf(h)}
+            <!-- Keyboard selection runs through the combobox input (arrows + Enter). -->
+            <!-- svelte-ignore a11y_click_events_have_key_events -->
+            <div
+              id="hit-{i}"
+              role="option"
+              tabindex="-1"
+              aria-selected={i === active}
+              class={cn("flex cursor-default gap-2 rounded-md px-2 py-1.5", i === active && "bg-accent-soft ring-1 ring-accent ring-inset")}
+              onmousemove={() => (active = i)}
+              onclick={() => pick(i)}
+            >
             <Avatar user={h.message.sender} size={24} />
             <div class="min-w-0 flex-1">
               <div class="flex items-baseline gap-2">
@@ -124,11 +130,13 @@
               <p class="m-0 line-clamp-2 text-[13px]">
                 {#each h.snippet as p, j (j)}{#if p.hit}<mark class="rounded-sm bg-highlight-strong px-px text-foreground">{p.text}</mark>{:else}{p.text}{/if}{/each}
               </p>
+              <span class="sr-only">, in {g.name}</span>
             </div>
-          </li>
-        {/each}
+            </div>
+          {/each}
+        </div>
       {/each}
-    </ul>
+    </div>
     {#if result?.coveredFromUs}
       <p class="m-0 border-t border-border px-3 py-1.5 text-[11px] text-muted-foreground">
         Searching messages synced since {dayLabel(result.coveredFromUs)}.

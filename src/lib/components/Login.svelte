@@ -26,14 +26,14 @@
     <img src="/icon.png" alt="" width="56" height="56" class="mb-5 rounded-xl" draggable="false" />
     <h1 class="m-0 text-[22px] font-semibold tracking-tight">kwek</h1>
     <p class="mt-1 mb-6 text-[14px] text-muted-foreground">
-      Google Chat for your Mac. Connect your Google account once; after that kwek keeps your conversations in sync, also offline.
+      Google Chat for your Mac. Connect your Google account once; after that kwek keeps your conversations in sync and works offline.
     </p>
     <Button class="h-10 w-full text-[14px]" onclick={connect} disabled={busy}>
       {busy ? "Waiting for Google" : "Connect to Google"}
     </Button>
     <p class="mt-3 min-h-10 text-[12px] text-muted-foreground" role="status" aria-live="polite">
       {#if busy}
-        Finish signing in in the browser tab that just opened, then come back here.
+        Finish in the browser tab that just opened, then come back here.
       {:else if error}
         <span class="text-destructive">{error}</span>
       {/if}

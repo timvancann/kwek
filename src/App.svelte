@@ -24,7 +24,7 @@
 {:else if app.auth.state !== "signedIn"}
   <Login />
 {:else}
-  <div class="flex h-full">
+  <div class="relative flex h-full">
     <Sidebar />
     <ChannelView />
     <ThreadPanel />

@@ -61,6 +61,9 @@
     return out;
   });
 
+  /** In a thread, the root is the first message row; a "N replies" line follows it. */
+  const firstMessageRow = $derived(rows.findIndex((r) => r.type === "msg"));
+
   function isAtBottom() {
     if (!scroller) return true;
     return scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 48;
@@ -97,10 +100,17 @@
       if (k !== lastKey) {
         lastKey = k;
         const mem = scrollMemory.get(k);
-        if (typeof mem === "number") scroller.scrollTop = mem;
+        const newLine = scroller.querySelector<HTMLElement>("[data-new-line]");
+        if (newLine) {
+          // Unread on entry: start at the New line so nothing is marked read unseen.
+          scroller.scrollTop = Math.max(0, newLine.offsetTop - 48);
+        } else if (typeof mem === "number") scroller.scrollTop = mem;
         else scroller.scrollTop = scroller.scrollHeight;
         stickToBottom = isAtBottom();
-        if (where === "channel") app.atBottom = stickToBottom;
+        if (where === "channel") {
+          app.atBottom = stickToBottom;
+          app.maybeMarkRead();
+        }
       } else if (count > lastCount && stickToBottom) {
         scroller.scrollTop = scroller.scrollHeight;
       }
@@ -135,8 +145,16 @@
 
   // Zone focus with nothing selected: focus the list itself so j/k start from here.
   $effect(() => {
+    void app.focusNonce;
     if (zoneActive && !selected && scroller && !scroller.contains(document.activeElement)) scroller.focus({ preventScroll: true });
+    if (zoneActive && selected && scroller) {
+      const el = scroller.querySelector<HTMLElement>(`[data-message="${CSS.escape(selected)}"]`);
+      if (el && document.activeElement !== el) el.focus({ preventScroll: true });
+    }
   });
+
+  /** Roving tab stop: the selected message, else the newest. */
+  const tabStop = $derived(selected ?? messages[messages.length - 1]?.name ?? null);
 
   function select(name: string) {
     if (where === "thread") {
@@ -152,11 +170,10 @@
 <div
   bind:this={scroller}
   onscroll={onScroll}
-  class="min-h-0 flex-1 overflow-y-auto outline-none"
-  role="feed"
-  aria-label={label}
-  aria-busy={app.loadingOlder}
+  class="min-h-0 flex-1 overflow-y-auto outline-none focus:ring-2 focus:ring-ring focus:ring-inset"
   tabindex="-1"
+  aria-label={label}
+  role="region"
 >
   {#if where === "channel"}
     <div class="px-4 pt-6 pb-2 text-center text-[12px] text-muted-foreground">
@@ -165,25 +182,43 @@
       {:else if app.currentSpace?.historyComplete}
         This is the start of the conversation.
       {:else}
-        <button class="underline underline-offset-2 hover:text-foreground" onclick={older}>Load older messages</button>
+        <button class="inline-flex h-6 items-center underline underline-offset-2 hover:text-foreground" onclick={older}>Load older messages</button>
       {/if}
     </div>
   {/if}
-  {#each rows as r (r.id)}
-    {#if r.type === "day"}
-      <div class="flex items-center gap-3 px-4 pt-4 pb-1" role="separator" aria-label={r.label}>
-        <div class="h-px flex-1 bg-border"></div>
-        <span class="text-[12px] font-medium text-muted-foreground">{r.label}</span>
-        <div class="h-px flex-1 bg-border"></div>
-      </div>
-    {:else if r.type === "new"}
-      <div class="flex items-center gap-2 px-4 pt-2" role="separator" aria-label="New messages">
-        <div class="h-0.5 flex-1 rounded-full bg-highlight-strong"></div>
-        <span class="rounded-sm bg-highlight-strong px-1.5 text-[11px] font-semibold text-foreground">New</span>
-      </div>
-    {:else}
-      <Message m={r.m} grouped={r.grouped} selected={selected === r.m.name} {where} onselect={() => select(r.m.name)} />
-    {/if}
-  {/each}
+  <div role="feed" aria-label={label} aria-busy={app.loadingOlder}>
+    {#each rows as r, i (r.id)}
+      {#if r.type === "day"}
+        <div class="flex items-center gap-3 px-4 pt-4 pb-1" role="separator" aria-label={r.label}>
+          <div class="h-px flex-1 bg-border"></div>
+          <span class="text-[12px] font-medium text-muted-foreground" aria-hidden="true">{r.label}</span>
+          <div class="h-px flex-1 bg-border"></div>
+        </div>
+      {:else if r.type === "new"}
+        <div data-new-line class="flex items-center gap-2 px-4 pt-2" role="separator" aria-label="New messages">
+          <div class="h-0.5 flex-1 rounded-full bg-highlight-strong"></div>
+          <span class="rounded-sm bg-highlight-strong px-1.5 text-[11px] font-semibold text-foreground" aria-hidden="true">New</span>
+        </div>
+      {:else}
+        <Message
+          m={r.m}
+          grouped={r.grouped}
+          selected={selected === r.m.name}
+          tabbable={tabStop === r.m.name}
+          position={i + 1}
+          {where}
+          onselect={() => select(r.m.name)}
+        />
+        {#if where === "thread" && i === firstMessageRow && messages.length > 1}
+          <div class="flex items-center gap-3 px-4 py-1.5" role="separator" aria-label="Replies">
+            <span class="text-[12px] font-medium text-muted-foreground" aria-hidden="true"
+              >{messages.length - 1} {messages.length === 2 ? "reply" : "replies"}</span
+            >
+            <div class="h-px flex-1 bg-border"></div>
+          </div>
+        {/if}
+      {/if}
+    {/each}
+  </div>
   <div class="h-3"></div>
 </div>

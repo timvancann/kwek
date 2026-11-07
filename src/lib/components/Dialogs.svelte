@@ -49,6 +49,7 @@
   const shown = $derived(
     filter.trim() ? EMOJI.filter(([n]) => n.includes(filter.trim().toLowerCase())).map(([, e]) => e) : [...new Set(EMOJI.map(([, e]) => e))],
   );
+  const mine = $derived(new Set(app.reactTo?.reactions.filter((r) => r.mine).map((r) => r.emoji) ?? []));
   function pick(e: string) {
     const m = app.reactTo;
     app.reactTo = null;
@@ -62,18 +63,23 @@
       <Dialog.Title>Keyboard shortcuts</Dialog.Title>
       <Dialog.Description>Letter keys work whenever you are not typing in a text field.</Dialog.Description>
     </Dialog.Header>
-    <div class="grid max-h-[60vh] gap-4 overflow-y-auto">
-      {#each groups as g (g)}
-        <section>
-          <h3 class="mb-1 text-[12px] font-semibold text-muted-foreground">{g}</h3>
-          <dl class="m-0 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1">
-            {#each bindings.filter((b) => b.group === g && b.keys !== "i") as b (b.keys)}
-              <dt><kbd class="inline-block min-w-7 rounded border border-input px-1.5 text-center font-sans text-[12px]">{b.keys}</kbd></dt>
-              <dd class="m-0">{b.label}</dd>
-            {/each}
-          </dl>
-        </section>
-      {/each}
+    <!-- Focusable so the list scrolls from the keyboard when the window is short. -->
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+    <div class="max-h-[min(70vh,560px)] overflow-y-auto rounded-sm" tabindex="0" role="region" aria-label="Shortcut list">
+      <dl class="m-0 grid grid-cols-[5.5rem_1fr] items-baseline gap-x-4 gap-y-1">
+        {#each groups as g (g)}
+          <dt class="col-span-2 mt-3 mb-0.5 text-[12px] font-semibold text-muted-foreground first:mt-0">{g}</dt>
+          {#each bindings.filter((b) => b.group === g && b.keys !== "i") as b (b.keys)}
+            <dt>
+              <kbd class="inline-block min-w-7 rounded border border-input px-1.5 text-center font-sans text-[12px]">{b.keys}</kbd>
+              {#if b.keys === "Enter"}<span class="text-[12px] text-muted-foreground"> or </span><kbd
+                  class="inline-block min-w-5 rounded border border-input px-1.5 text-center font-sans text-[12px]">i</kbd
+                >{/if}
+            </dt>
+            <dd class="m-0">{b.label}</dd>
+          {/each}
+        {/each}
+      </dl>
     </div>
   </Dialog.Content>
 </Dialog.Root>
@@ -112,15 +118,10 @@
       <Dialog.Title>React</Dialog.Title>
       <Dialog.Description class="sr-only">Pick an emoji to add or remove your reaction.</Dialog.Description>
     </Dialog.Header>
-    <div class="flex gap-1" role="group" aria-label="Frequent">
-      {#each QUICK as e (e)}
-        <button class="emoji" onclick={() => pick(e)} aria-label="React with {e}">{e}</button>
-      {/each}
-    </div>
     <input
       bind:value={filter}
-      class="selectable h-8 rounded-md border border-input px-2 outline-none focus:border-accent"
-      placeholder="Find an emoji by name"
+      class="selectable h-8 rounded-md border border-input px-2 outline-none focus:border-accent focus:ring-2 focus:ring-accent/30"
+      placeholder="Find an emoji by name, Enter picks the first"
       aria-label="Find an emoji by name"
       onkeydown={(e) => {
         if (e.key === "Enter" && shown[0]) {
@@ -129,9 +130,16 @@
         }
       }}
     />
-    <div class="grid max-h-48 grid-cols-8 gap-1 overflow-y-auto" role="group" aria-label="All emoji">
+    {#if !filter.trim()}
+      <div class="flex gap-1" role="group" aria-label="Frequent">
+        {#each QUICK as e (e)}
+          <button class="emoji" class:mine={mine.has(e)} aria-pressed={mine.has(e)} onclick={() => pick(e)} aria-label="React with {e}">{e}</button>
+        {/each}
+      </div>
+    {/if}
+    <div class="grid max-h-48 grid-cols-8 gap-1 overflow-y-auto" role="group" aria-label={filter.trim() ? "Matching emoji" : "All emoji"}>
       {#each shown as e (e)}
-        <button class="emoji" onclick={() => pick(e)} aria-label="React with {e}">{e}</button>
+        <button class="emoji" class:mine={mine.has(e)} aria-pressed={mine.has(e)} onclick={() => pick(e)} aria-label="React with {e}">{e}</button>
       {/each}
     </div>
   </Dialog.Content>
@@ -146,8 +154,15 @@
     line-height: 36px;
     text-align: center;
   }
-  .emoji:hover,
-  .emoji:focus-visible {
+  .emoji:hover {
     background: var(--muted);
+  }
+  .emoji:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: -2px;
+  }
+  .emoji.mine {
+    background: var(--accent-soft);
+    box-shadow: inset 0 0 0 1px var(--accent);
   }
 </style>

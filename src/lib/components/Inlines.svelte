@@ -5,7 +5,8 @@
   import Video from "@lucide/svelte/icons/video";
   import FileText from "@lucide/svelte/icons/file-text";
 
-  let { inlines }: { inlines: Inline[] } = $props();
+  let { inlines, tabbable = true }: { inlines: Inline[]; tabbable?: boolean } = $props();
+  const tab = $derived(tabbable ? 0 : -1);
 
   function open(e: MouseEvent, url: string) {
     e.preventDefault();
@@ -24,6 +25,7 @@
     {#if i.rich}
       <a
         href={i.url}
+        tabindex={tab}
         onclick={(e) => open(e, i.url)}
         class="mx-px inline-flex items-center gap-1 rounded-sm border border-border bg-muted px-1.5 py-px align-baseline text-accent no-underline hover:border-accent"
       >
@@ -31,7 +33,7 @@
         <span class="max-w-[28ch] truncate">{i.label}</span>
       </a>
     {:else}
-      <a href={i.url} onclick={(e) => open(e, i.url)} class="break-words text-accent underline decoration-accent/40 underline-offset-2 hover:decoration-accent"
+      <a href={i.url} tabindex={tab} onclick={(e) => open(e, i.url)} class="break-words text-accent underline decoration-accent/40 underline-offset-2 hover:decoration-accent"
         >{i.label}</a
       >
     {/if}

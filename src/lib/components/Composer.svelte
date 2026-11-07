@@ -73,7 +73,16 @@
   });
 
   $effect(() => {
+    void app.focusNonce;
     if (app.zone === zone && el && document.activeElement !== el && !app.overlay) el.focus();
+  });
+
+  // Tell screen reader users that suggestions appeared (a textarea cannot be a combobox).
+  let lastCount = 0;
+  $effect(() => {
+    const n = suggestions.length;
+    if (n > 0 && lastCount === 0) app.say(`${n} ${n === 1 ? "suggestion" : "suggestions"}. Arrow keys to choose, Enter to insert.`);
+    lastCount = n;
   });
 
   function autosize() {
@@ -234,9 +243,7 @@
       rows="1"
       aria-label={label}
       aria-describedby={editing ? `edit-hint-${where}` : undefined}
-      role="combobox"
-      aria-expanded={suggestions.length > 0}
-      aria-controls={listId}
+      aria-controls={suggestions.length ? listId : undefined}
       aria-autocomplete="list"
       aria-activedescendant={suggestions.length ? `${listId}-${active}` : undefined}
       placeholder={label}

@@ -24,12 +24,12 @@ function setSelected(name: string | null) {
   else app.selected = name;
 }
 
+/** In the sidebar, j/k only move the highlight: opening (and marking read) needs Enter or o. */
 function move(dir: 1 | -1) {
   if (app.zone === "sidebar") {
     const order = app.sidebarOrder;
     if (order.length === 0) return;
     app.sidebarIndex = Math.min(order.length - 1, Math.max(0, app.sidebarIndex + dir));
-    void app.open(order[app.sidebarIndex].name);
     return;
   }
   if (app.zone !== "thread") app.zone = "messages";
@@ -45,7 +45,6 @@ function edge(last: boolean) {
     const order = app.sidebarOrder;
     if (order.length === 0) return;
     app.sidebarIndex = last ? order.length - 1 : 0;
-    void app.open(order[app.sidebarIndex].name);
     return;
   }
   if (app.zone !== "thread") app.zone = "messages";
@@ -85,7 +84,7 @@ export const bindings: Binding[] = [
   { keys: "G", label: "Newest message", group: "Navigate", run: () => edge(true) },
   { keys: "⌃H", label: "Move to the pane on the left", group: "Navigate", run: zoneLeft },
   { keys: "⌃L", label: "Move to the pane on the right", group: "Navigate", run: zoneRight },
-  { keys: "Enter", label: "Write a message", group: "Messages", run: focusComposer },
+  { keys: "Enter", label: "Write a message (in the sidebar: open the conversation)", group: "Messages", run: focusComposer },
   { keys: "i", label: "Write a message", group: "Messages", run: focusComposer },
   {
     keys: "r",
@@ -98,15 +97,21 @@ export const bindings: Binding[] = [
   },
   {
     keys: "o",
-    label: "Open the thread",
+    label: "Open the thread (or the conversation in the sidebar)",
     group: "Messages",
-    run: () =>
+    run: () => {
+      if (app.zone === "sidebar") {
+        const s = app.sidebarOrder[app.sidebarIndex];
+        if (s) void app.open(s.name).then(() => (app.zone = "composer"));
+        return;
+      }
       withSelected((m) => {
         if (m.thread)
           void app.openThread(m.thread).then(() => {
             app.zone = "thread";
           });
-      }),
+      });
+    },
   },
   {
     keys: "e",
@@ -155,8 +160,9 @@ export function handleKey(e: KeyboardEvent): boolean {
     return true;
   }
   // Dialogs and overlays own the keyboard while open.
-  if (app.overlay || app.confirmDelete || app.reactTo) return false;
-  if (e.ctrlKey && !e.metaKey && (e.key === "h" || e.key === "l")) {
+  if (app.overlay || app.confirmDelete || app.reactTo || app.confirmSignOut) return false;
+  // Ctrl+H/L only outside text fields: there Ctrl+H is macOS delete-backward.
+  if (e.ctrlKey && !e.metaKey && (e.key === "h" || e.key === "l") && !isEditable(e.target)) {
     e.preventDefault();
     if (e.key === "h") zoneLeft();
     else zoneRight();
@@ -177,9 +183,11 @@ export function handleKey(e: KeyboardEvent): boolean {
   let key = e.key === "Escape" ? "Esc" : e.key;
   if (key === "Enter" && (e.target as HTMLElement)?.closest?.("button, a, [role=button]")) return false;
   if (pending) {
-    key = pending + key;
+    const combined = pending + key;
     pending = "";
     clearTimeout(pendingTimer);
+    // An unfinished sequence (g then j) falls through to the second key on its own.
+    if (bindings.some((x) => x.keys === combined)) key = combined;
   }
   const b = bindings.find((x) => x.keys === key);
   if (b) {

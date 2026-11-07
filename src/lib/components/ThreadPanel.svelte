@@ -9,7 +9,11 @@
 </script>
 
 {#if t}
-  <aside class="flex w-[384px] shrink-0 flex-col border-l border-border" aria-label="Thread">
+  <!-- Below 1000px the panel overlays the channel instead of squeezing it. -->
+  <aside
+    class="flex w-[384px] shrink-0 flex-col border-l border-border bg-background max-[1000px]:absolute max-[1000px]:inset-y-0 max-[1000px]:right-0 max-[1000px]:z-20 max-[1000px]:w-[min(384px,100%)] max-[1000px]:shadow-xl"
+    aria-label="Thread"
+  >
     <header data-tauri-drag-region class="flex h-12 shrink-0 items-center gap-2 border-b border-border pr-2 pl-4">
       <h2 data-tauri-drag-region class="text-[15px] font-semibold">Thread</h2>
       <span data-tauri-drag-region class="min-w-0 truncate text-[12px] text-muted-foreground">{spaceName}</span>

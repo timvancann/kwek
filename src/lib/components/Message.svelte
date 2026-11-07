@@ -20,17 +20,39 @@
     m,
     grouped = false,
     selected = false,
+    tabbable = false,
     where = "channel",
+    position,
     onselect,
   }: {
     m: MessageView;
     grouped?: boolean;
     selected?: boolean;
+    /** The one message in the list that Tab lands on (roving tab stop). */
+    tabbable?: boolean;
     where?: "channel" | "thread";
+    position?: number;
     onselect?: () => void;
   } = $props();
 
-  const label = $derived(`${m.sender.displayName}, ${stamp(m.createUs)}${m.edited ? ", edited" : ""}`);
+  // The article's name is "sender, time"; its description is the text plus state, so
+  // screen readers read the message itself when j/k moves focus here.
+  const uid = $derived(`msg-${where}-${m.name.replace(/[^a-zA-Z0-9]/g, "-")}`);
+  const state = $derived(
+    [
+      m.edited && "edited",
+      m.mentionsMe && !m.deleted && "mentions you",
+      m.localState === "pending" && "sending",
+      m.localState === "failed" && "not sent",
+      m.attachments.length > 0 && `${m.attachments.length} ${m.attachments.length === 1 ? "attachment" : "attachments"}`,
+      m.reactions.length > 0 && m.reactions.map((r) => `${r.emoji} ${r.count}`).join(", "),
+      m.threadSummary && where === "channel" && `${m.threadSummary.replyCount} ${m.threadSummary.replyCount === 1 ? "reply" : "replies"}`,
+    ]
+      .filter(Boolean)
+      .join(", "),
+  );
+  // Controls inside a message are reachable with Tab only when it is the selected one.
+  const inner = $derived(selected ? 0 : -1);
 
   async function download(resource: string, name: string) {
     try {
@@ -54,13 +76,16 @@
 <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
 <article
   data-message={m.name}
-  tabindex={selected ? 0 : -1}
-  aria-label={label}
+  tabindex={tabbable ? 0 : -1}
+  aria-labelledby="{uid}-who {uid}-when"
+  aria-describedby="{uid}-body {uid}-state"
+  aria-posinset={position}
+  aria-setsize={-1}
   aria-current={selected ? "true" : undefined}
   onclick={onselect}
   onfocus={onselect}
   class={cn(
-    "group relative flex gap-2.5 px-4 outline-none",
+    "group relative flex gap-2.5 px-4 outline-none focus:ring-2 focus:ring-ring focus:ring-inset",
     grouped ? "py-0.5" : "pt-2 pb-0.5",
     m.mentionsMe && !m.deleted && "bg-highlight/70",
     selected ? "bg-accent-soft" : "hover:bg-muted",
@@ -82,25 +107,31 @@
   <div class="min-w-0 flex-1">
     {#if !grouped}
       <div class="flex items-baseline gap-2">
-        <span class="font-semibold">{m.sender.displayName}</span>
+        <span id="{uid}-who" class="font-semibold">{m.sender.displayName}</span>
         <time datetime={new Date(m.createUs / 1000).toISOString()} class="text-[12px] text-muted-foreground" title={stamp(m.createUs)}
-          >{clock(m.createUs)}</time
+          ><span aria-hidden="true">{clock(m.createUs)}</span><span id="{uid}-when" class="sr-only">{stamp(m.createUs)}</span></time
         >
       </div>
+    {:else}
+      <span id="{uid}-who" class="sr-only">{m.sender.displayName}</span>
+      <span id="{uid}-when" class="sr-only">{stamp(m.createUs)}</span>
     {/if}
+    <span id="{uid}-state" class="sr-only">{state}</span>
 
     {#if m.deleted}
-      <p class="my-0 text-muted-foreground italic">Message deleted</p>
+      <p id="{uid}-body" class="my-0 text-muted-foreground italic">Message deleted</p>
     {:else}
-      <div class="selectable leading-[1.5] break-words">
-        <Blocks blocks={m.blocks} />
-        {#if m.edited}<span class="ml-1 text-[12px] text-muted-foreground">(edited)</span>{/if}
+      <div id="{uid}-body" class="selectable max-w-[80ch] leading-[1.5] break-words">
+        <Blocks blocks={m.blocks} tabbable={selected} />
+        {#if m.edited}<span class="ml-1 text-[12px] text-muted-foreground" aria-hidden="true">(edited)</span>{/if}
       </div>
 
       {#if m.hasCards}
         <p class="my-1 text-[12px] text-muted-foreground">
           Card content from an app.
-          {#if m.webUrl}<button class="text-accent underline underline-offset-2" onclick={() => api.openUrl(m.webUrl!)}>Open in Google Chat</button>{/if}
+          {#if m.webUrl}<button tabindex={inner} class="text-accent underline underline-offset-2" onclick={() => api.openUrl(m.webUrl!)}
+              >Open in Google Chat</button
+            >{/if}
         </p>
       {/if}
 
@@ -109,6 +140,7 @@
           {#each m.attachments as a, i (i)}
             {#if a.kind === "image" && a.mediaUrl}
               <button
+                tabindex={inner}
                 class="block overflow-hidden rounded-md border border-border"
                 onclick={() => a.resource && download(a.resource, a.name)}
                 aria-label="Image {a.name}, save to Downloads"
@@ -117,6 +149,7 @@
               </button>
             {:else}
               <button
+                tabindex={inner}
                 class="inline-flex max-w-xs items-center gap-1.5 rounded-md border border-border bg-muted px-2 py-1 text-left hover:border-accent"
                 onclick={() => (a.openUrl ? api.openUrl(a.openUrl) : a.resource && download(a.resource, a.name))}
               >
@@ -136,6 +169,7 @@
         <div class="mt-1 flex flex-wrap gap-1">
           {#each m.reactions as r (r.key)}
             <button
+              tabindex={inner}
               class={cn(
                 "inline-flex h-6 items-center gap-1 rounded-full border px-2 text-[12px]",
                 r.mine ? "border-accent bg-accent-soft text-accent" : "border-border bg-background hover:border-input",
@@ -152,18 +186,18 @@
     {/if}
 
     {#if m.localState === "failed"}
-      <p class="my-1 flex items-center gap-2 text-[12px] text-destructive" role="status">
+      <!-- Failure is announced once through the global announcer (state.svelte.ts). -->
+      <p class="my-1 flex items-center gap-2 text-[12px] text-destructive">
         Not sent.
-        <button class="font-medium underline underline-offset-2" onclick={retry}>Retry</button>
-        <button class="text-muted-foreground underline underline-offset-2" onclick={discard}>Discard</button>
+        <button class="inline-flex h-6 items-center font-medium underline underline-offset-2" onclick={retry}>Retry</button>
+        <button class="inline-flex h-6 items-center text-muted-foreground underline underline-offset-2" onclick={discard}>Discard</button>
       </p>
-    {:else if m.localState === "pending"}
-      <span class="sr-only" role="status">Sending</span>
     {/if}
 
     {#if m.threadSummary && where === "channel"}
       <button
-        class="-ml-1 mt-1 flex items-center gap-2 rounded-md px-1 py-0.5 text-[12px] hover:bg-background"
+        tabindex={inner}
+        class="-ml-1 mt-1 flex min-h-6 items-center gap-2 rounded-md px-1 py-0.5 text-[12px] hover:bg-background"
         onclick={(e) => {
           e.stopPropagation();
           if (m.thread) void app.openThread(m.thread);
@@ -193,19 +227,19 @@
       role="toolbar"
       aria-label="Message actions"
     >
-      <button class="act" aria-label="React" title="React (+)" onclick={(e) => (e.stopPropagation(), (app.reactTo = m))}><SmilePlus /></button>
+      <button class="act" tabindex={inner} aria-label="React" title="React (+)" onclick={(e) => (e.stopPropagation(), (app.reactTo = m))}><SmilePlus /></button>
       {#if where === "channel" && m.thread}
-        <button class="act" aria-label="Reply in thread" title="Reply in thread (r)" onclick={(e) => (e.stopPropagation(), app.openThread(m.thread!))}
+        <button class="act" tabindex={inner} aria-label="Reply in thread" title="Reply in thread (r)" onclick={(e) => (e.stopPropagation(), app.openThread(m.thread!))}
           ><MessageSquare /></button
         >
       {/if}
       {#if m.isOwn}
-        <button class="act" aria-label="Edit" title="Edit (e)" onclick={(e) => (e.stopPropagation(), app.startEdit(m, where))}><Pencil /></button>
-        <button class="act" aria-label="Delete" title="Delete (dd)" onclick={(e) => (e.stopPropagation(), (app.confirmDelete = m))}><Trash /></button>
+        <button class="act" tabindex={inner} aria-label="Edit" title="Edit (e)" onclick={(e) => (e.stopPropagation(), app.startEdit(m, where))}><Pencil /></button>
+        <button class="act" tabindex={inner} aria-label="Delete" title="Delete (dd)" onclick={(e) => (e.stopPropagation(), (app.confirmDelete = m))}><Trash /></button>
       {/if}
       {#if m.webUrl}
-        <button class="act" aria-label="Copy link" title="Copy link (y)" onclick={(e) => (e.stopPropagation(), app.copyLink(m))}><LinkIcon /></button>
-        <button class="act" aria-label="Open in Google Chat" title="Open in Google Chat" onclick={(e) => (e.stopPropagation(), api.openUrl(m.webUrl!))}
+        <button class="act" tabindex={inner} aria-label="Copy link" title="Copy link (y)" onclick={(e) => (e.stopPropagation(), app.copyLink(m))}><LinkIcon /></button>
+        <button class="act" tabindex={inner} aria-label="Open in Google Chat" title="Open in Google Chat" onclick={(e) => (e.stopPropagation(), api.openUrl(m.webUrl!))}
           ><External /></button
         >
       {/if}
@@ -226,6 +260,10 @@
   .act:hover {
     background: var(--muted);
     color: var(--foreground);
+  }
+  .act:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: -2px;
   }
   .act :global(svg) {
     width: 16px;

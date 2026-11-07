@@ -63,6 +63,10 @@ class AppState {
   reactTo = $state<MessageView | null>(null);
   announce = $state("");
   windowFocused = $state(true);
+  /** Bumped to ask the active zone to take focus again (after a dialog closes). */
+  focusNonce = $state(0);
+  collapsed = $state<Record<string, boolean>>({});
+  alphabetical = $state(false);
 
   currentSpace = $derived(this.spaces.find((s) => s.name === this.current) ?? null);
   currentMessages = $derived(this.current ? (this.messages[this.current] ?? []) : []);
@@ -72,20 +76,37 @@ class AppState {
     const starred = this.spaces.filter((s) => s.starred);
     const dms = this.spaces.filter((s) => !s.starred && s.kind !== "space");
     const rooms = this.spaces.filter((s) => !s.starred && s.kind === "space");
+    const sortRooms = (xs: SpaceSummary[]) =>
+      this.alphabetical ? [...xs].sort((a, b) => a.displayName.localeCompare(b.displayName)) : xs;
     return [
       { id: "starred", title: "Starred", items: starred },
       { id: "dms", title: "Direct messages", items: dms },
-      { id: "spaces", title: "Spaces", items: rooms },
+      { id: "spaces", title: "Spaces", items: sortRooms(rooms) },
     ].filter((s) => s.items.length > 0);
   });
-  sidebarOrder = $derived(this.sections.flatMap((s) => s.items));
+  /** What the sidebar shows, in order: j/k walk exactly this. */
+  sidebarOrder = $derived(this.sections.flatMap((s) => (this.collapsed[s.id] ? [] : s.items)));
+
+  /** Screen reader announcement; identical consecutive texts are announced again. */
+  say(text: string) {
+    this.announce = "";
+    setTimeout(() => (this.announce = text), 50);
+  }
 
   async init() {
     await Promise.all([
       on<SpaceSummary[]>("spaces:changed", (s) => (this.spaces = s)),
       on<UpsertPayload>("messages:upserted", (p) => this.onUpsert(p)),
       on<DeletePayload>("messages:deleted", (p) => this.onDelete(p)),
-      on<SyncStatus>("sync:status", (s) => (this.status = s)),
+      on<SyncStatus>("sync:status", (s) => {
+        const was = this.status.state;
+        this.status = s;
+        if (s.state === was) return;
+        if (s.state === "offline") this.say("Offline. Showing cached messages.");
+        else if (s.state === "authRequired") this.say("Signed out of Google.");
+        else if (s.state === "error") this.say("Sync stopped. kwek keeps retrying.");
+        else if (s.state === "live" && (was === "offline" || was === "error")) this.say("Back online.");
+      }),
       on<AuthState>("auth:changed", (a) => {
         const wasIn = this.auth.state === "signedIn";
         this.auth = a;
@@ -127,6 +148,8 @@ class AppState {
       this.current = space;
       this.editing = null;
       this.selected = null;
+      // Unknown until the list has restored its scroll position; it reports back.
+      this.atBottom = false;
       this.sidebarIndex = Math.max(0, this.sidebarOrder.findIndex((x) => x.name === space));
       if (this.thread && this.thread.space !== space) this.closeThread();
       try {
@@ -142,7 +165,6 @@ class AppState {
       this.selected = message;
       this.zone = "messages";
     }
-    this.maybeMarkRead();
   }
 
   async loadOlder() {
@@ -186,41 +208,56 @@ class AppState {
   closeThread() {
     this.thread = null;
     this.threadSelected = null;
-    if (this.zone === "thread" || this.zone === "threadComposer") this.zone = "messages";
+    // Focus goes back to the message the thread belongs to, or the channel list.
+    if (this.zone === "thread" || this.zone === "threadComposer") this.zone = this.selected ? "messages" : "composer";
+    this.focusNonce++;
     void api.setOpen(this.current, null);
   }
 
   private onUpsert(p: UpsertPayload) {
     const loaded = this.messages[p.space];
-    let arrivedFromOthers: MessageView | null = null;
+    const arrived: MessageView[] = [];
     if (loaded) {
       let list = loaded;
       for (const m of p.messages) {
         if (m.isReply) continue;
-        const isNew = !list.some((x) => x.name === m.name);
+        const before = list.find((x) => x.name === m.name);
         list = upsertInto(list, m);
-        if (isNew && !m.isOwn) arrivedFromOthers = m;
+        if (!before && !m.isOwn) arrived.push(m);
+        if (m.localState === "failed" && before?.localState !== "failed") this.say("Message not sent. Retry is next to it.");
       }
       this.messages[p.space] = list;
     }
     if (this.thread && this.thread.space === p.space) {
       let list = this.thread.messages;
       for (const m of p.messages) {
-        if (m.thread === this.thread.name) list = upsertInto(list, m);
+        if (m.thread !== this.thread.name) continue;
+        const isNew = !list.some((x) => x.name === m.name);
+        list = upsertInto(list, m);
+        if (isNew && !m.isOwn && m.isReply) arrived.push(m);
       }
       this.thread.messages = list;
     }
-    if (arrivedFromOthers && p.space === this.current) {
-      this.announce = `New message from ${arrivedFromOthers.sender.displayName}`;
+    if (arrived.length && p.space === this.current) {
+      const who = arrived[arrived.length - 1].sender.displayName;
+      this.say(arrived.length === 1 ? `New message from ${who}` : `${arrived.length} new messages, latest from ${who}`);
       this.maybeMarkRead();
     }
   }
 
   private onDelete(p: DeletePayload) {
     const drop = new Set(p.names);
-    if (this.messages[p.space]) this.messages[p.space] = this.messages[p.space].filter((m) => !drop.has(m.name));
+    const list = this.messages[p.space];
+    if (list) {
+      // Keep the keyboard selection on a neighbour instead of losing focus.
+      if (this.selected && drop.has(this.selected)) {
+        const i = list.findIndex((m) => m.name === this.selected);
+        const rest = list.filter((m) => !drop.has(m.name));
+        this.selected = rest[Math.min(i, rest.length - 1)]?.name ?? null;
+      }
+      this.messages[p.space] = list.filter((m) => !drop.has(m.name));
+    }
     if (this.thread) this.thread.messages = this.thread.messages.filter((m) => !drop.has(m.name));
-    if (this.selected && drop.has(this.selected)) this.selected = null;
   }
 
   /** At the bottom of the open space with the window focused: mark it read. */
