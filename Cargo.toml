@@ -7,6 +7,11 @@ edition = "2024"
 version = "0.1.0"
 license = "UNLICENSED"
 
+[profile.release.build-override]
+# The macOS 27 toolchain's `strip` leaves proc-macro dylibs unloadable ("mis-aligned
+# LINKEDIT string pool"), and release builds strip debuginfo by default.
+strip = "none"
+
 [workspace.dependencies]
 anyhow = "1"
 async-trait = "0.1"
