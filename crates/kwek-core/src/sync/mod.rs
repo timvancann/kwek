@@ -462,7 +462,12 @@ impl Engine {
                     // Google; replays are idempotent.
                     Some(since) if started - since < EVENT_RETENTION => {
                         match self.replay_events(&s.name, since - 5 * MINUTE, &me, started).await {
-                            Err(e) if e.http_status() == Some(400) => self.initial_fetch(&s.name, &me, true).await,
+                            // 400: start time outside retention. 403/404: spaceEvents needs
+                            // the Chat app too; until it is configured, refetch the latest
+                            // page (it includes edits and deletes via showDeleted).
+                            Err(e) if e.http_status() == Some(400) || is_config_error(&e) => {
+                                self.initial_fetch(&s.name, &me, true).await
+                            }
                             r => r,
                         }
                     }
