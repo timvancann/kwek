@@ -13,19 +13,6 @@ use crate::google::{Google, q};
 
 const BASE: &str = "https://chat.googleapis.com/v1";
 
-/// Event types `spaces.spaceEvents.list` is asked for during reconcile.
-pub const SPACE_EVENT_TYPES: &[&str] = &[
-    "google.workspace.chat.message.v1.created",
-    "google.workspace.chat.message.v1.updated",
-    "google.workspace.chat.message.v1.deleted",
-    "google.workspace.chat.reaction.v1.created",
-    "google.workspace.chat.reaction.v1.deleted",
-    "google.workspace.chat.membership.v1.created",
-    "google.workspace.chat.membership.v1.updated",
-    "google.workspace.chat.membership.v1.deleted",
-    "google.workspace.chat.space.v1.updated",
-];
-
 #[derive(Debug, Clone, Default)]
 pub struct ListMessages {
     pub page_size: u32,
@@ -45,8 +32,6 @@ pub trait ChatApi: Send + Sync {
     async fn delete_message(&self, name: &str) -> Result<()>;
     async fn create_reaction(&self, message: &str, emoji: &Emoji) -> Result<Reaction>;
     async fn delete_reaction(&self, name: &str) -> Result<()>;
-    /// Reactions on `message` by `user` (`users/{id}`).
-    async fn list_reactions_by(&self, message: &str, user: &str) -> Result<Vec<Reaction>>;
     async fn list_members(&self, space: &str, page_token: Option<&str>) -> Result<Page<Membership>>;
     async fn get_space_read_state(&self, space: &str) -> Result<SpaceReadState>;
     async fn update_space_read_state(&self, space: &str, last_read_time: &str) -> Result<SpaceReadState>;
@@ -142,24 +127,6 @@ impl ChatApi for HttpChat {
         self.g.delete(&format!("{BASE}/{name}")).await
     }
 
-    async fn list_reactions_by(&self, message: &str, user: &str) -> Result<Vec<Reaction>> {
-        let filter = format!("user.name = \"{user}\"");
-        let mut out = Vec::new();
-        let mut token: Option<String> = None;
-        loop {
-            let mut url = format!("{BASE}/{message}/reactions?pageSize=200&filter={}", q(&filter));
-            if let Some(t) = &token {
-                url += &format!("&pageToken={}", q(t));
-            }
-            let page: Page<Reaction> = self.g.get(&url).await?;
-            token = page.next().map(str::to_owned);
-            out.extend(page.items);
-            if token.is_none() {
-                return Ok(out);
-            }
-        }
-    }
-
     async fn list_members(&self, space: &str, page_token: Option<&str>) -> Result<Page<Membership>> {
         let mut url = format!("{BASE}/{space}/members?pageSize=1000");
         if let Some(t) = page_token {
@@ -190,8 +157,10 @@ impl ChatApi for HttpChat {
         start_time: &str,
         page_token: Option<&str>,
     ) -> Result<Page<SpaceEvent>> {
-        let types = SPACE_EVENT_TYPES
+        // The live subscription's types, minus space deletion (a deleted space has no events).
+        let types = crate::events::SPACES_EVENT_TYPES
             .iter()
+            .filter(|t| !t.ends_with("space.v1.deleted"))
             .map(|t| format!("event_types:\"{t}\""))
             .collect::<Vec<_>>()
             .join(" OR ");

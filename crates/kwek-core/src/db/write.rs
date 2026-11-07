@@ -311,13 +311,20 @@ pub fn bump_space_activity(c: &Connection, space: &str, us: Micros) -> Result<()
     Ok(())
 }
 
-pub fn set_history_complete(c: &Connection, space: &str) -> Result<()> {
-    c.execute("UPDATE space SET history_complete = 1 WHERE name = ?1", [space])?;
+pub fn set_history_complete(c: &Connection, space: &str, complete: bool) -> Result<()> {
+    c.execute(
+        "UPDATE space SET history_complete = ?2 WHERE name = ?1",
+        params![space, complete],
+    )?;
     Ok(())
 }
 
+/// Only meaningful for direct messages: the other person names the conversation.
 pub fn set_dm_peer(c: &Connection, space: &str, peer: &str) -> Result<()> {
-    c.execute("UPDATE space SET dm_peer = ?2 WHERE name = ?1", params![space, peer])?;
+    c.execute(
+        "UPDATE space SET dm_peer = ?2 WHERE name = ?1 AND space_type = 'DIRECT_MESSAGE'",
+        params![space, peer],
+    )?;
     Ok(())
 }
 
@@ -428,18 +435,16 @@ pub fn set_account(c: &Connection, id: &str, email: Option<&str>, name: Option<&
     Ok(())
 }
 
-pub fn touch_media(
-    c: &Connection,
-    resource: &str,
-    path: &str,
-    mime: Option<&str>,
-    bytes: i64,
-    now: Micros,
-) -> Result<()> {
-    c.execute(
-        "INSERT INTO media_cache (resource, path, mime, bytes, last_used_us) VALUES (?1, ?2, ?3, ?4, ?5)
-         ON CONFLICT(resource) DO UPDATE SET last_used_us = excluded.last_used_us",
-        params![resource, path, mime, bytes, now],
-    )?;
+/// Sets the contiguous-history low-water mark (see migrate_002.sql).
+pub fn set_low_water(c: &Connection, space: &str, us: Micros) -> Result<()> {
+    c.execute("UPDATE space SET low_water_us = ?2 WHERE name = ?1", params![space, us])?;
     Ok(())
+}
+
+/// Sends interrupted by a quit were never confirmed; show them as failed with Retry.
+pub fn fail_stale_pending(c: &Connection) -> Result<usize> {
+    Ok(c.execute(
+        "UPDATE message SET local_state = 'failed' WHERE local_state = 'pending'",
+        [],
+    )?)
 }

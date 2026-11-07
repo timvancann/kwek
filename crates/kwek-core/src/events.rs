@@ -322,9 +322,14 @@ impl EventsClient {
         struct Resp {
             received_messages: Vec<Received>,
         }
+        // Pull long-polls; a quiet minute ends in a timeout, which is an empty batch.
         let r: Resp = self
             .g
-            .post(&format!("{PUBSUB}/{subscription}:pull"), &json!({ "maxMessages": max }))
+            .long_poll(
+                &format!("{PUBSUB}/{subscription}:pull"),
+                &json!({ "maxMessages": max }),
+                std::time::Duration::from_secs(60),
+            )
             .await?;
         Ok(r.received_messages)
     }

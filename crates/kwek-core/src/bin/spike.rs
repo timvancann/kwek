@@ -213,7 +213,13 @@ async fn main() -> anyhow::Result<()> {
                 .await?;
             save("reactions", &raw);
             println!("all: {}", serde_json::to_string_pretty(&raw)?);
-            println!("mine: {:#?}", chat.list_reactions_by(&msg, &me.user).await?);
+            let filter = kwek_core::google::q(&format!("user.name = \"{}\"", me.user));
+            let mine: serde_json::Value = g
+                .get(&format!(
+                    "https://chat.googleapis.com/v1/{msg}/reactions?filter={filter}"
+                ))
+                .await?;
+            println!("mine: {}", serde_json::to_string_pretty(&mine)?);
         }
         "subscribe" => {
             let me = people.me().await?;

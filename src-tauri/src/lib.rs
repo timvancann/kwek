@@ -22,7 +22,6 @@ use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 pub struct AppState {
     pub engine: Arc<Engine>,
     pub media_dir: PathBuf,
-    pub http: kwek_core::reqwest::Client,
     _log_guard: tracing_appender::non_blocking::WorkerGuard,
 }
 
@@ -92,7 +91,7 @@ pub fn run() {
                 let state = app.state::<AppState>();
                 let decode = |s: &str| percent_encoding::percent_decode_str(s).decode_utf8_lossy().to_string();
                 let result = match path.strip_prefix("avatar/") {
-                    Some(url) => kwek_core::media::avatar(&state.http, &state.media_dir, &decode(url)).await,
+                    Some(url) => kwek_core::media::avatar(&state.media_dir, &decode(url)).await,
                     None => state.engine.media(&state.media_dir, &decode(&path)).await,
                 };
                 let resp = match result {
@@ -143,7 +142,6 @@ pub fn run() {
             app.manage(AppState {
                 engine,
                 media_dir,
-                http,
                 _log_guard: guard,
             });
             tracing::info!("kwek started");

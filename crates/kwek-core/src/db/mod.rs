@@ -12,7 +12,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::error::{Error, Result};
 
-const MIGRATIONS: &[&str] = &[include_str!("schema.sql")];
+const MIGRATIONS: &[&str] = &[include_str!("schema.sql"), include_str!("migrate_002.sql")];
 
 #[derive(Clone)]
 pub struct Db {
@@ -66,7 +66,7 @@ impl Db {
                 "BEGIN;
                  DELETE FROM message; DELETE FROM space; DELETE FROM user; DELETE FROM membership;
                  DELETE FROM my_reaction; DELETE FROM space_read_state; DELETE FROM thread_read_state;
-                 DELETE FROM media_cache; DELETE FROM account; DELETE FROM kv;
+                 DELETE FROM account; DELETE FROM kv;
                  INSERT INTO message_fts(message_fts) VALUES ('rebuild');
                  COMMIT;",
             )?;
@@ -96,11 +96,6 @@ pub fn kv_set(c: &Connection, key: &str, value: &str) -> Result<()> {
         "INSERT INTO kv(key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         params![key, value],
     )?;
-    Ok(())
-}
-
-pub fn kv_delete(c: &Connection, key: &str) -> Result<()> {
-    c.execute("DELETE FROM kv WHERE key = ?1", [key])?;
     Ok(())
 }
 

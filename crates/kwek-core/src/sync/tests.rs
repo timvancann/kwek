@@ -139,9 +139,6 @@ impl ChatApi for Fake {
     async fn delete_reaction(&self, _: &str) -> Result<()> {
         Ok(())
     }
-    async fn list_reactions_by(&self, _: &str, _: &str) -> Result<Vec<Reaction>> {
-        Ok(vec![])
-    }
     async fn list_members(&self, space: &str, _: Option<&str>) -> Result<Page<Membership>> {
         let w = self.0.lock().unwrap();
         Ok(Page {
@@ -413,14 +410,72 @@ async fn reconcile_replays_missed_events_without_duplicates() {
         ];
         w.spaces[0].last_active_time = Some("2030-01-01T00:01:00Z".into());
     }
-    e.reconcile().await.unwrap();
-    e.reconcile().await.unwrap();
+    e.reconcile(false).await.unwrap();
+    e.reconcile(false).await.unwrap();
 
     let msgs = e.get_messages("spaces/team", None, 50).unwrap();
     assert_eq!(msgs.len(), 3);
     assert!(msgs[0].edited);
     assert_eq!(render::plain(&msgs[0].blocks), "hello edited");
     assert_eq!(render::plain(&msgs[2].blocks), "after sleep");
+}
+
+/// Deletes and edits do not move a space's lastActiveTime; a full reconcile (startup, wake,
+/// polling) must still replay them.
+#[tokio::test]
+async fn full_reconcile_catches_deletes_without_new_activity() {
+    let f = world();
+    let (e, _) = engine(&f).await;
+    e.bootstrap().await.unwrap();
+    {
+        let mut w = f.0.lock().unwrap();
+        let now = ts::format(ts::now() + MINUTE);
+        w.events = vec![SpaceEvent {
+            name: "spaces/team/spaceEvents/9".into(),
+            event_time: Some(now.clone()),
+            event_type: "google.workspace.chat.message.v1.deleted".into(),
+            data: serde_json::from_value(serde_json::json!({
+                "messageDeletedEventData": {"message": {"name": "spaces/team/messages/3", "deleteTime": now}}
+            }))
+            .unwrap(),
+        }];
+    }
+    // The gated pass skips the space: no newer activity.
+    e.reconcile(false).await.unwrap();
+    assert!(!e.message_view("spaces/team/messages/3").unwrap().unwrap().deleted);
+    e.reconcile(true).await.unwrap();
+    let m = e.message_view("spaces/team/messages/3").unwrap().unwrap();
+    assert!(m.deleted);
+    assert!(m.blocks.is_empty());
+    assert_eq!(
+        e.search("deploy", 20, 0).unwrap().hits.len(),
+        0,
+        "deleted text leaves the search index"
+    );
+}
+
+#[tokio::test]
+async fn interrupted_send_becomes_failed_on_restart() {
+    let f = world();
+    let rec = Arc::new(Rec::default());
+    let db = Db::open_in_memory().unwrap();
+    db.with(|c| write::insert_pending(c, "spaces/team", None, "half sent", "client-x", ME, 5).map(|_| ()))
+        .unwrap();
+    let e = Engine::new(db, Arc::new(f.clone()), Arc::new(FakePeople), None, None, rec, None);
+    assert_eq!(
+        e.message_view("pending:client-x").unwrap().unwrap().local_state,
+        "failed"
+    );
+}
+
+#[tokio::test]
+async fn media_refuses_resources_not_in_any_message() {
+    let f = world();
+    let (e, _) = engine(&f).await;
+    e.bootstrap().await.unwrap();
+    let dir = std::env::temp_dir().join(format!("kwek-media-{}", uuid::Uuid::new_v4()));
+    assert!(e.media(&dir, "../spaces?pageSize=1000").await.is_err());
+    assert!(e.media(&dir, "unknownresource").await.is_err());
 }
 
 #[tokio::test]

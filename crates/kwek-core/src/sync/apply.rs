@@ -5,6 +5,7 @@ use std::collections::BTreeSet;
 
 use rusqlite::Connection;
 
+use crate::db::read;
 use crate::db::write::{self, Upsert};
 use crate::error::Result;
 use crate::events::Event;
@@ -12,29 +13,29 @@ use crate::ts;
 
 #[derive(Debug, Default)]
 pub struct Applied {
-    pub spaces: BTreeSet<String>,
+    /// Something changed that the sidebar shows (read state, membership, spaces).
+    pub changed: bool,
     /// (space, message name) upserted or changed.
     pub upserted: Vec<(String, String)>,
     /// Names of messages inserted for the first time (notification candidates).
     pub inserted: Vec<String>,
     pub deleted: Vec<(String, String)>,
-    pub read: Vec<(String, Option<String>)>,
     /// Messages whose reaction summary changed; the engine refetches them.
     pub stale_reactions: BTreeSet<String>,
+    /// Spaces whose read state arrived without a time; the engine refetches it.
+    pub stale_read: BTreeSet<String>,
     /// Spaces the user joined that are not known locally yet.
     pub joined_spaces: BTreeSet<String>,
-    pub removed_spaces: BTreeSet<String>,
 }
 
 impl Applied {
     pub fn is_empty(&self) -> bool {
-        self.spaces.is_empty()
+        !self.changed
             && self.upserted.is_empty()
             && self.deleted.is_empty()
-            && self.read.is_empty()
             && self.stale_reactions.is_empty()
+            && self.stale_read.is_empty()
             && self.joined_spaces.is_empty()
-            && self.removed_spaces.is_empty()
     }
 }
 
@@ -50,7 +51,7 @@ pub fn apply(c: &Connection, events: &[Event], me: &str) -> Result<Applied> {
         if let Some(k) = known_cache.get(space) {
             return Ok(*k);
         }
-        let k = space_exists(c, space)?;
+        let k = read::space_exists(c, space)?;
         known_cache.insert(space.to_owned(), k);
         Ok(k)
     };
@@ -78,8 +79,7 @@ pub fn apply(c: &Connection, events: &[Event], me: &str) -> Result<Applied> {
                         if outcome == Upsert::Inserted {
                             a.inserted.push(m.name.clone());
                         }
-                        a.upserted.push((space.clone(), m.name.clone()));
-                        a.spaces.insert(space);
+                        a.upserted.push((space, m.name.clone()));
                     }
                 }
             }
@@ -87,9 +87,7 @@ pub fn apply(c: &Connection, events: &[Event], me: &str) -> Result<Applied> {
                 // Without a time the delete still has to be final; 1 µs sorts before any edit.
                 let at = delete_time.as_deref().and_then(ts::parse).unwrap_or(1);
                 write::mark_deleted(c, name, at)?;
-                let space = crate::chat::space_of(name);
-                a.deleted.push((space.clone(), name.clone()));
-                a.spaces.insert(space);
+                a.deleted.push((crate::chat::space_of(name), name.clone()));
             }
             Event::ReactionCreated(r) => {
                 let msg = r.message_name();
@@ -109,14 +107,14 @@ pub fn apply(c: &Connection, events: &[Event], me: &str) -> Result<Applied> {
                     let joined = matches!(mb.state.as_deref(), None | Some("JOINED"));
                     if joined {
                         write::upsert_membership(c, &space, member, mb.role.as_deref())?;
-                        if member.name == me && !space_exists(c, &space)? {
+                        if member.name == me && !read::space_exists(c, &space)? {
                             a.joined_spaces.insert(space.clone());
                         }
                     } else {
                         write::delete_membership(c, &space, &member.name)?;
                     }
                 }
-                a.spaces.insert(space);
+                a.changed = true;
             }
             Event::MembershipDeleted(mb) => {
                 let space = mb.space_name();
@@ -124,34 +122,39 @@ pub fn apply(c: &Connection, events: &[Event], me: &str) -> Result<Applied> {
                     write::delete_membership(c, &space, &member.name)?;
                     if member.name == me {
                         write::delete_space(c, &space)?;
-                        a.removed_spaces.insert(space.clone());
                     }
                 }
-                a.spaces.insert(space);
+                a.changed = true;
             }
             Event::SpaceUpdated(s) => {
                 if !s.name.is_empty() {
                     write::upsert_space(c, s)?;
-                    a.spaces.insert(s.name.clone());
+                    a.changed = true;
                 }
             }
             Event::SpaceDeleted { name } => {
                 write::delete_space(c, name)?;
-                a.removed_spaces.insert(name.clone());
+                a.changed = true;
             }
+            // A read state without a time (e.g. an event without the resource) must never
+            // wipe the known mark: that would zero the unread counts. Refetch it instead.
             Event::SpaceReadState(rs) => {
                 if let Some(space) = rs.space_name() {
-                    write::set_space_read(c, &space, rs.last_read_time.as_deref().and_then(ts::parse))?;
-                    a.read.push((space.clone(), None));
-                    a.spaces.insert(space);
+                    match rs.last_read_time.as_deref().and_then(ts::parse) {
+                        Some(t) => {
+                            write::set_space_read(c, &space, Some(t))?;
+                            a.changed = true;
+                        }
+                        None => {
+                            a.stale_read.insert(space);
+                        }
+                    }
                 }
             }
             Event::ThreadReadState(tr) => {
-                if let Some(thread) = tr.thread_name() {
-                    write::set_thread_read(c, &thread, tr.last_read_time.as_deref().and_then(ts::parse))?;
-                    let space = crate::chat::space_of(&thread);
-                    a.read.push((space.clone(), Some(thread)));
-                    a.spaces.insert(space);
+                if let (Some(thread), Some(t)) = (tr.thread_name(), tr.last_read_time.as_deref().and_then(ts::parse)) {
+                    write::set_thread_read(c, &thread, Some(t))?;
+                    a.changed = true;
                 }
             }
             Event::Lifecycle { .. } | Event::Unknown(_) => {}
@@ -161,7 +164,7 @@ pub fn apply(c: &Connection, events: &[Event], me: &str) -> Result<Applied> {
 }
 
 /// The space an event is about, if it is about one.
-fn event_space(ev: &Event) -> Option<String> {
+pub(crate) fn event_space(ev: &Event) -> Option<String> {
     use crate::chat::space_of;
     match ev {
         Event::MessageUpserted(m) => Some(m.space_name()),
@@ -174,13 +177,6 @@ fn event_space(ev: &Event) -> Option<String> {
         Event::ThreadReadState(tr) => tr.thread_name().map(|t| space_of(&t)),
         Event::Lifecycle { .. } | Event::Unknown(_) => None,
     }
-}
-
-fn space_exists(c: &Connection, space: &str) -> Result<bool> {
-    use rusqlite::OptionalExtension;
-    Ok(c.query_row("SELECT 1 FROM space WHERE name = ?1", [space], |_| Ok(()))
-        .optional()?
-        .is_some())
 }
 
 #[cfg(test)]

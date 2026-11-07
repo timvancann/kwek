@@ -2,6 +2,7 @@
 //! UI can show in a toast.
 
 use kwek_core::Error;
+use kwek_core::sync::Engine;
 use kwek_core::views::{AuthState, MessageView, SearchResult, SpaceSummary, SyncStatus, UserRef};
 use tauri::{AppHandle, State};
 use tauri_plugin_opener::OpenerExt;
@@ -14,7 +15,7 @@ fn msg(e: Error) -> String {
     match e {
         Error::AuthRequired => "Sign in to Google again to continue.".into(),
         Error::NoOAuthClient => "This build has no Google client configured.".into(),
-        Error::Network(_) => "No connection. Try again when you are back online.".into(),
+        Error::Network(_) | Error::Timeout => "No connection. Try again when you are back online.".into(),
         Error::Api { status: 403, .. } => "Google refused this action (no permission).".into(),
         Error::Api { status: 404, .. } => "That no longer exists in Google Chat.".into(),
         Error::Api { status: 429, .. } => "Google is rate limiting kwek. Try again in a moment.".into(),
@@ -23,9 +24,22 @@ fn msg(e: Error) -> String {
     }
 }
 
+/// Synchronous commands run on the main thread in Tauri 2; reads that touch SQLite or the
+/// Keychain go to the blocking pool instead, so a long sync transaction never stalls the UI.
+async fn blocking<T: Send + 'static>(
+    state: &State<'_, AppState>,
+    f: impl FnOnce(&Engine) -> kwek_core::Result<T> + Send + 'static,
+) -> Res<T> {
+    let engine = state.engine.clone();
+    tauri::async_runtime::spawn_blocking(move || f(&engine))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(msg)
+}
+
 #[tauri::command]
-pub fn auth_status(state: State<'_, AppState>) -> AuthState {
-    state.engine.auth_state()
+pub async fn auth_status(state: State<'_, AppState>) -> Res<AuthState> {
+    blocking(&state, |e| Ok(e.auth_state())).await
 }
 
 #[tauri::command]
@@ -57,18 +71,18 @@ pub fn refresh(state: State<'_, AppState>) {
 }
 
 #[tauri::command]
-pub fn list_spaces(state: State<'_, AppState>) -> Res<Vec<SpaceSummary>> {
-    state.engine.list_spaces().map_err(msg)
+pub async fn list_spaces(state: State<'_, AppState>) -> Res<Vec<SpaceSummary>> {
+    blocking(&state, |e| e.list_spaces()).await
 }
 
 #[tauri::command]
-pub fn get_messages(
+pub async fn get_messages(
     state: State<'_, AppState>,
     space: String,
     before: Option<i64>,
     limit: u32,
 ) -> Res<Vec<MessageView>> {
-    state.engine.get_messages(&space, before, limit).map_err(msg)
+    blocking(&state, move |e| e.get_messages(&space, before, limit)).await
 }
 
 #[tauri::command]
@@ -79,8 +93,9 @@ pub async fn load_older(state: State<'_, AppState>, space: String) -> Res<u32> {
 /// Returns the cached thread now and refreshes it from the API in the background; fresh
 /// replies arrive as `messages:upserted`.
 #[tauri::command]
-pub fn get_thread(state: State<'_, AppState>, thread: String) -> Res<Vec<MessageView>> {
-    let cached = state.engine.get_thread_cached(&thread).map_err(msg)?;
+pub async fn get_thread(state: State<'_, AppState>, thread: String) -> Res<Vec<MessageView>> {
+    let t = thread.clone();
+    let cached = blocking(&state, move |e| e.get_thread_cached(&t)).await?;
     let engine = state.engine.clone();
     tauri::async_runtime::spawn(async move {
         if let Err(e) = engine.fetch_thread(&thread).await {
@@ -147,23 +162,23 @@ pub async fn mark_thread_read(state: State<'_, AppState>, thread: String, up_to:
 }
 
 #[tauri::command]
-pub fn search(state: State<'_, AppState>, query: String, limit: u32, offset: u32) -> Res<SearchResult> {
-    state.engine.search(&query, limit, offset).map_err(msg)
+pub async fn search(state: State<'_, AppState>, query: String, limit: u32, offset: u32) -> Res<SearchResult> {
+    blocking(&state, move |e| e.search(&query, limit, offset)).await
 }
 
 #[tauri::command]
-pub fn list_members(state: State<'_, AppState>, space: String) -> Res<Vec<UserRef>> {
-    state.engine.list_members(&space).map_err(msg)
+pub async fn list_members(state: State<'_, AppState>, space: String) -> Res<Vec<UserRef>> {
+    blocking(&state, move |e| e.list_members(&space)).await
 }
 
 #[tauri::command]
-pub fn set_space_prefs(
+pub async fn set_space_prefs(
     state: State<'_, AppState>,
     space: String,
     muted: Option<bool>,
     starred: Option<bool>,
 ) -> Res<()> {
-    state.engine.set_space_prefs(&space, muted, starred).map_err(msg)
+    blocking(&state, move |e| e.set_space_prefs(&space, muted, starred)).await
 }
 
 #[tauri::command]
@@ -172,8 +187,12 @@ pub fn set_open(state: State<'_, AppState>, space: Option<String>, thread: Optio
 }
 
 #[tauri::command]
-pub fn last_own_message(state: State<'_, AppState>, space: String, thread: Option<String>) -> Res<Option<MessageView>> {
-    state.engine.last_own_message(&space, thread.as_deref()).map_err(msg)
+pub async fn last_own_message(
+    state: State<'_, AppState>,
+    space: String,
+    thread: Option<String>,
+) -> Res<Option<MessageView>> {
+    blocking(&state, move |e| e.last_own_message(&space, thread.as_deref())).await
 }
 
 /// Opens a link in the system browser. Only web and mail links; never files or apps.
@@ -228,7 +247,9 @@ pub async fn download_attachment(
     // Without the flag, a malicious `.command` or `.app` attachment would open unchecked.
     if let Err(e) = quarantine(&path) {
         let _ = tokio::fs::remove_file(&path).await;
-        return Err(format!("Could not mark the download as quarantined, so it was not saved: {e}"));
+        return Err(format!(
+            "Could not mark the download as quarantined, so it was not saved: {e}"
+        ));
     }
     let p = path.to_string_lossy().to_string();
     let _ = app.opener().reveal_item_in_dir(&path);

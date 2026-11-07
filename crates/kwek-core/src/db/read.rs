@@ -87,9 +87,10 @@ pub fn spaces(c: &Connection, me: &str) -> Result<Vec<SpaceRow>> {
     Ok(rows)
 }
 
-pub fn space(c: &Connection, me: &str, name: &str) -> Result<Option<SpaceRow>> {
-    let sql = format!("{SPACE_SELECT} WHERE s.name = ?2");
-    Ok(c.query_row(&sql, params![me, name], space_row).optional()?)
+pub fn space_exists(c: &Connection, name: &str) -> Result<bool> {
+    Ok(c.query_row("SELECT 1 FROM space WHERE name = ?1", [name], |_| Ok(()))
+        .optional()?
+        .is_some())
 }
 
 pub fn space_names(c: &Connection) -> Result<Vec<String>> {
@@ -198,12 +199,28 @@ pub fn last_own(c: &Connection, space: &str, thread: Option<&str>, me: &str) -> 
     Ok(c.query_row(&sql, params![space, me, thread], msg_row).optional()?)
 }
 
-pub fn oldest_synced(c: &Connection, space: &str) -> Result<Option<Micros>> {
+/// The contiguous-history low-water mark and whether the start of history is cached.
+pub fn history_bounds(c: &Connection, space: &str) -> Result<(Option<Micros>, bool)> {
     Ok(c.query_row(
-        "SELECT min(create_us) FROM message WHERE space = ?1 AND local_state = 'synced' AND create_us > 0",
+        "SELECT low_water_us, history_complete FROM space WHERE name = ?1",
         [space],
-        |r| r.get(0),
-    )?)
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .optional()?
+    .unwrap_or((None, false)))
+}
+
+/// An attachment resource name that appears in a cached message: the only media the
+/// webview may ask Rust to fetch with the user's token.
+pub fn is_known_attachment(c: &Connection, resource: &str) -> Result<bool> {
+    let needle = serde_json::to_string(resource)?;
+    Ok(c.query_row(
+        "SELECT 1 FROM message WHERE attachments IS NOT NULL AND instr(attachments, ?1) > 0 LIMIT 1",
+        [needle],
+        |_| Ok(()),
+    )
+    .optional()?
+    .is_some())
 }
 
 #[derive(Debug, Clone, Default)]
@@ -421,9 +438,11 @@ pub fn search(
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
+/// The point from which search covers every conversation: the most recent contiguous
+/// low-water mark among spaces whose history is not fully cached.
 pub fn search_coverage(c: &Connection) -> Result<Option<Micros>> {
     Ok(c.query_row(
-        "SELECT min(create_us) FROM message WHERE local_state = 'synced' AND create_us > 0",
+        "SELECT max(low_water_us) FROM space WHERE history_complete = 0 AND low_water_us IS NOT NULL",
         [],
         |r| r.get(0),
     )?)

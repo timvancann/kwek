@@ -25,6 +25,10 @@ pub enum Error {
     #[error("network: {0}")]
     Network(String),
 
+    /// A long-poll that ended without an answer (normal for a quiet Pub/Sub pull).
+    #[error("timed out")]
+    Timeout,
+
     #[error("database: {0}")]
     Db(#[from] rusqlite::Error),
 

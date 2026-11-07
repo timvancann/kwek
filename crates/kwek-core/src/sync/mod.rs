@@ -97,6 +97,11 @@ impl Engine {
             .flatten()
             .map(|a| a.id)
             .unwrap_or_default();
+        // A send in flight when the app quit was never confirmed: offer Retry instead of
+        // leaving it "sending" forever.
+        if let Err(e) = db.with(|c| write::fail_stale_pending(c)) {
+            tracing::warn!("could not reset pending sends: {e}");
+        }
         Arc::new(Self {
             db,
             chat,
@@ -196,6 +201,13 @@ impl Engine {
     async fn ensure_identity(&self) -> Result<String> {
         let p = self.people.me().await?;
         let id = p.user.clone();
+        // Signing in as someone else: nothing of the previous account may stay (reactions,
+        // read state and mention flags are per user).
+        let previous = self.db.call(|c| read::account(c)).await?.map(|a| a.id);
+        if previous.as_deref().is_some_and(|prev| prev != id) {
+            tracing::info!("different account signed in; wiping the local cache");
+            self.db.wipe()?;
+        }
         self.db
             .call(move |c| {
                 write::set_account(c, &p.user, p.email.as_deref(), p.display_name.as_deref())?;
@@ -220,7 +232,12 @@ impl Engine {
                 continue;
             }
             match self.session().await {
-                Ok(()) => backoff = Duration::from_secs(2),
+                Ok(()) => {
+                    // A session ends Ok to restart live (subscription recreated, polling
+                    // recovered). Never spin.
+                    backoff = Duration::from_secs(2);
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                }
                 Err(Error::AuthRequired) => {
                     self.sink.auth(AuthState::SignedOut);
                     self.set_status("authRequired", None);
@@ -247,12 +264,12 @@ impl Engine {
         if self.me().is_empty() {
             self.ensure_identity().await?;
         }
-        let bootstrapped = self.db.with(|c| kv_get(c, "bootstrapped"))?.is_some();
-        if bootstrapped {
-            self.reconcile().await?;
-        } else {
+        let bootstrapped = self.db.call(|c| kv_get(c, "bootstrapped")).await?.is_some();
+        if !bootstrapped {
             self.bootstrap().await?;
         }
+        // live() sets up the subscriptions first and then reconciles, so nothing that
+        // happens in between is missed.
         self.live().await
     }
 
@@ -273,7 +290,7 @@ impl Engine {
         let mut stream = futures::stream::iter(spaces.into_iter().map(|s| {
             let this = self.clone();
             let me = me.clone();
-            async move { this.initial_fetch(&s, &me).await.map(|_| s) }
+            async move { this.initial_fetch(&s, &me, false).await.map(|_| s) }
         }))
         .buffer_unordered(4);
         while let Some(r) = stream.next().await {
@@ -328,8 +345,9 @@ impl Engine {
         Ok(names)
     }
 
-    /// Latest messages, members and read state of one space.
-    async fn initial_fetch(&self, space: &str, me: &str) -> Result<()> {
+    /// Latest messages, members and read state of one space. Resets the contiguous-history
+    /// mark to the oldest message of this page: older cache may have a gap behind it.
+    async fn initial_fetch(&self, space: &str, me: &str, notify: bool) -> Result<()> {
         let started = ts::now();
         let page = self
             .chat
@@ -343,8 +361,20 @@ impl Engine {
             )
             .await?;
         let complete = page.next().is_none();
+        let low_water = page
+            .items
+            .iter()
+            .filter_map(|m| m.create_time.as_deref().and_then(ts::parse))
+            .min();
         let read_state = self.chat.get_space_read_state(space).await.ok();
-        let members = self.all_members(space).await.unwrap_or_default();
+        // On failure keep the members we have rather than wiping them.
+        let members = match self.all_members(space).await {
+            Ok(m) => Some(m),
+            Err(e) => {
+                tracing::debug!(%space, "members not refreshed: {e}");
+                None
+            }
+        };
         let mut events: Vec<Event> = page.items.into_iter().map(Event::MessageUpserted).collect();
         if let Some(rs) = read_state {
             events.push(Event::SpaceReadState(rs));
@@ -355,28 +385,29 @@ impl Engine {
             .call(move |c| {
                 let tx = c.transaction()?;
                 let a = apply(&tx, &events, &me_owned)?;
-                write::clear_memberships(&tx, &space_owned)?;
-                let mut peer = None;
-                for m in &members {
-                    if let Some(u) = &m.member {
-                        write::upsert_membership(&tx, &space_owned, u, m.role.as_deref())?;
-                        if u.name != me_owned && u.kind.as_deref() != Some("BOT") {
-                            peer.get_or_insert(u.name.clone());
+                if let Some(members) = &members {
+                    write::clear_memberships(&tx, &space_owned)?;
+                    let mut peer = None;
+                    for m in members {
+                        if let Some(u) = &m.member {
+                            write::upsert_membership(&tx, &space_owned, u, m.role.as_deref())?;
+                            if u.name != me_owned && u.kind.as_deref() != Some("BOT") {
+                                peer.get_or_insert(u.name.clone());
+                            }
                         }
                     }
+                    if let Some(p) = peer {
+                        write::set_dm_peer(&tx, &space_owned, &p)?;
+                    }
                 }
-                if let Some(p) = peer {
-                    write::set_dm_peer(&tx, &space_owned, &p)?;
-                }
-                if complete {
-                    write::set_history_complete(&tx, &space_owned)?;
-                }
+                write::set_history_complete(&tx, &space_owned, complete)?;
+                write::set_low_water(&tx, &space_owned, low_water.unwrap_or(started))?;
                 write::set_space_synced(&tx, &space_owned, started)?;
                 tx.commit()?;
                 Ok(a)
             })
             .await?;
-        self.after_apply(applied, false).await;
+        self.after_apply(applied, notify).await;
         Ok(())
     }
 
@@ -393,8 +424,14 @@ impl Engine {
         }
     }
 
-    /// Closes gaps: new and changed spaces, missed events, read state.
-    pub async fn reconcile(self: &Arc<Self>) -> Result<()> {
+    /// Closes gaps: new spaces, missed events, read state.
+    ///
+    /// `full` replays `spaceEvents` for every space. It is needed whenever live events may
+    /// have been missed (startup, wake, a recreated subscription, polling): edits, deletes,
+    /// reactions and read changes do not move a space's `lastActiveTime`, so a gated pass
+    /// would never see them. The gated pass (only spaces with newer activity) serves the
+    /// periodic safety net while live events are flowing.
+    pub async fn reconcile(self: &Arc<Self>, full: bool) -> Result<()> {
         let _g = self.sync_lock.lock().await;
         self.set_status("reconciling", None);
         let started = ts::now();
@@ -413,7 +450,7 @@ impl Engine {
                 (Some(synced), Some(active)) => active > synced,
                 (Some(_), None) => false,
             };
-            let result = if !changed {
+            let result = if !(full || changed) {
                 if s.unread > 0 {
                     self.refresh_read_state(&s.name).await
                 } else {
@@ -421,13 +458,15 @@ impl Engine {
                 }
             } else {
                 match s.last_synced_us {
+                    // Five minutes of overlap absorbs clock skew between this Mac and
+                    // Google; replays are idempotent.
                     Some(since) if started - since < EVENT_RETENTION => {
-                        match self.replay_events(&s.name, since - MINUTE, &me, started).await {
-                            Err(e) if e.http_status() == Some(400) => self.initial_fetch(&s.name, &me).await,
+                        match self.replay_events(&s.name, since - 5 * MINUTE, &me, started).await {
+                            Err(e) if e.http_status() == Some(400) => self.initial_fetch(&s.name, &me, true).await,
                             r => r,
                         }
                     }
-                    _ => self.initial_fetch(&s.name, &me).await,
+                    _ => self.initial_fetch(&s.name, &me, true).await,
                 }
             };
             match result {
@@ -471,18 +510,19 @@ impl Engine {
                 Ok(a)
             })
             .await?;
-        self.after_apply(applied, false).await;
+        // Replayed messages notify too; the five-minute freshness rule keeps old ones quiet.
+        self.after_apply(applied, true).await;
         Ok(())
     }
 
+    /// Read state straight from REST. A missing time leaves the known mark alone.
     async fn refresh_read_state(&self, space: &str) -> Result<()> {
         let rs = self.chat.get_space_read_state(space).await?;
-        let me = self.me();
-        let applied = self
-            .db
-            .call(move |c| apply(c, &[Event::SpaceReadState(rs)], &me))
-            .await?;
-        self.after_apply(applied, false).await;
+        let (Some(name), Some(t)) = (rs.space_name(), rs.last_read_time.as_deref().and_then(ts::parse)) else {
+            return Ok(());
+        };
+        self.db.call(move |c| write::set_space_read(c, &name, Some(t))).await?;
+        self.emit_spaces();
         Ok(())
     }
 
@@ -540,16 +580,19 @@ impl Engine {
         let device = self.device_id().await?;
         let sub = ev.ensure_pubsub(&device).await?;
         let spaces = ev.ensure_subscription(SPACES_TARGET, SPACES_EVENT_TYPES, true).await?;
+        // Only a rejection of `includeResource` justifies the fallback; a transient error must
+        // not leave us with a resource-less subscription for good.
         let user = match ev
             .ensure_subscription(&user_target(&self.me()), USER_EVENT_TYPES, true)
             .await
         {
             Ok(s) => s,
-            Err(e) => {
-                tracing::info!("user subscription with resource failed ({e}); retrying without");
+            Err(e) if e.is_status("INVALID_ARGUMENT") => {
+                tracing::info!("user subscription with resource refused ({e}); retrying without");
                 ev.ensure_subscription(&user_target(&self.me()), USER_EVENT_TYPES, false)
                     .await?
             }
+            Err(e) => return Err(e),
         };
         *self.own_subs.lock().unwrap() = vec![spaces.name, user.name];
         Ok(sub)
@@ -575,9 +618,13 @@ impl Engine {
         };
         let sub = match self.ensure_subscriptions().await {
             Ok(s) => s,
-            Err(e @ (Error::AuthRequired | Error::Network(_))) => return Err(e),
-            Err(e) => return self.poll(e).await,
+            // Polling is for configuration problems that will not fix themselves soon (no
+            // Chat app, no permission). Anything else ends the session and retries.
+            Err(e) if is_config_error(&e) => return self.poll(e).await,
+            Err(e) => return Err(e),
         };
+        // Subscriptions first, then catch up: nothing falls between the two.
+        self.reconcile(true).await?;
         self.set_status("live", None);
         let mut renewed = Instant::now();
         let mut reconciled = Instant::now();
@@ -587,7 +634,7 @@ impl Engine {
             let batch = tokio::select! {
                 r = ev.pull(&sub, 100) => r,
                 _ = self.wake.notified() => {
-                    self.reconcile().await?;
+                    self.reconcile(true).await?;
                     self.set_status("live", None);
                     continue;
                 }
@@ -615,6 +662,7 @@ impl Engine {
                         }
                     }
                 }
+                self.adopt_unknown_spaces(&events).await?;
                 let me = self.me();
                 let applied = self
                     .db
@@ -637,7 +685,7 @@ impl Engine {
                         }
                         "expired" | "suspended" => {
                             self.ensure_subscriptions().await?;
-                            self.reconcile().await?;
+                            self.reconcile(true).await?;
                             self.set_status("live", None);
                         }
                         _ => {}
@@ -649,7 +697,7 @@ impl Engine {
                     tracing::info!("wake from sleep detected");
                     self.ensure_subscriptions().await?;
                 }
-                self.reconcile().await?;
+                self.reconcile(slept).await?;
                 self.set_status("live", None);
                 reconciled = Instant::now();
             }
@@ -665,9 +713,11 @@ impl Engine {
     /// Ok ends the session, so the next one starts live.
     async fn poll(self: &Arc<Self>, cause: Error) -> Result<()> {
         tracing::warn!("live events unavailable, polling instead: {cause}");
-        self.set_status("polling", Some(short(&cause)));
         let mut last_try = Instant::now();
         loop {
+            // Polling is the only source of changes here, so every pass is a full one.
+            self.reconcile(true).await?;
+            self.set_status("polling", Some(short(&cause)));
             tokio::select! {
                 _ = tokio::time::sleep(POLL_EVERY) => {}
                 _ = self.wake.notified() => {}
@@ -676,17 +726,44 @@ impl Engine {
                 last_try = Instant::now();
                 match self.ensure_subscriptions().await {
                     Ok(_) => return Ok(()),
-                    Err(e @ (Error::AuthRequired | Error::Network(_))) => return Err(e),
-                    Err(e) => tracing::debug!("live events still unavailable: {e}"),
+                    Err(e) if is_config_error(&e) => tracing::debug!("live events still unavailable: {e}"),
+                    Err(e) => return Err(e),
                 }
             }
-            self.reconcile().await?;
-            self.set_status("polling", Some(short(&cause)));
         }
     }
 
-    /// Follow-ups after a commit: reaction refetches, new spaces, UI events, notifications.
-    async fn after_apply(&self, applied: Applied, live: bool) {
+    /// An event that passed the subscription filter but names a space we do not know yet:
+    /// usually the first message in a new DM, which can arrive before (or without) the
+    /// membership event. Fetching the space succeeds only if the user is a member, so this
+    /// keeps the security property of the applier's foreign-space filter.
+    async fn adopt_unknown_spaces(&self, events: &[Event]) -> Result<()> {
+        let mut spaces: Vec<String> = events.iter().filter_map(apply::event_space).collect();
+        spaces.sort();
+        spaces.dedup();
+        for space in spaces {
+            let s2 = space.clone();
+            if self.db.call(move |c| read::space_exists(c, &s2)).await? {
+                continue;
+            }
+            match self.chat.get_space(&space).await {
+                Ok(s) => {
+                    self.db.call(move |c| write::upsert_space(c, &s)).await?;
+                    let me = self.me();
+                    // Members and read state; the triggering event itself is applied next.
+                    if let Err(e) = Box::pin(self.initial_fetch(&space, &me, true)).await {
+                        tracing::warn!(%space, "new space fetch failed: {e}");
+                    }
+                }
+                Err(e) => tracing::debug!(%space, "event for an inaccessible space dropped: {e}"),
+            }
+        }
+        Ok(())
+    }
+
+    /// Follow-ups after a commit: reaction and read-state refetches, new spaces, UI events,
+    /// notifications (`notify`: false only during bootstrap).
+    async fn after_apply(&self, applied: Applied, notify: bool) {
         if applied.is_empty() {
             return;
         }
@@ -696,13 +773,16 @@ impl Engine {
             match self.chat.get_message(&name).await {
                 Ok(m) => {
                     let me = self.me();
-                    let space = m.space_name();
                     if let Ok(a) = self.db.call(move |c| apply(c, &[Event::MessageUpserted(m)], &me)).await {
                         applied.upserted.extend(a.upserted);
                     }
-                    applied.spaces.insert(space);
                 }
                 Err(e) => tracing::debug!("reaction refetch failed: {e}"),
+            }
+        }
+        for space in std::mem::take(&mut applied.stale_read) {
+            if let Err(e) = self.refresh_read_state(&space).await {
+                tracing::debug!(%space, "read state refetch failed: {e}");
             }
         }
         for space in std::mem::take(&mut applied.joined_spaces) {
@@ -710,7 +790,7 @@ impl Engine {
                 let me = self.me();
                 let _ = self.db.call(move |c| write::upsert_space(c, &s)).await;
                 // Boxed: initial_fetch calls back into after_apply.
-                let _ = Box::pin(self.initial_fetch(&space, &me)).await;
+                let _ = Box::pin(self.initial_fetch(&space, &me, notify)).await;
             }
         }
 
@@ -730,7 +810,7 @@ impl Engine {
         for (space, names) in deleted {
             self.sink.messages_deleted(&space, names);
         }
-        if live {
+        if notify {
             self.notify_new(&applied.inserted);
         }
         self.emit_spaces();
@@ -756,6 +836,7 @@ impl Engine {
         };
         let now = ts::now();
         let b = Builder { me: &me, users: &users };
+        let mut out: Vec<Notification> = Vec::new();
         for r in rows {
             let Some(space) = spaces.iter().find(|s| s.name == r.space) else {
                 continue;
@@ -784,13 +865,26 @@ impl Engine {
             if body.chars().count() > 180 {
                 body = body.chars().take(177).collect::<String>() + "…";
             }
-            self.sink.notify(Notification {
+            out.push(Notification {
                 title,
                 body,
                 space: r.space.clone(),
                 message: r.name.clone(),
                 thread: r.thread.clone(),
             });
+        }
+        // A burst (catching up after sleep) becomes one notification for the newest.
+        if out.len() > 3 {
+            let n = out.len();
+            let latest = out.pop().expect("non-empty");
+            out = vec![Notification {
+                title: format!("{n} new messages"),
+                body: format!("{}: {}", latest.title, latest.body),
+                ..latest
+            }];
+        }
+        for n in out {
+            self.sink.notify(n);
         }
     }
 
@@ -941,23 +1035,12 @@ impl Engine {
     /// Pages one batch of older history into the cache. Returns how many messages arrived.
     pub async fn load_older(&self, space: &str) -> Result<u32> {
         let space_owned = space.to_owned();
-        let (oldest, complete) = self
-            .db
-            .call(move |c| {
-                let oldest = read::oldest_synced(c, &space_owned)?;
-                let complete: bool = c
-                    .query_row(
-                        "SELECT history_complete FROM space WHERE name = ?1",
-                        [&space_owned],
-                        |r| r.get(0),
-                    )
-                    .unwrap_or(false);
-                Ok((oldest, complete))
-            })
-            .await?;
+        let (low_water, complete) = self.db.call(move |c| read::history_bounds(c, &space_owned)).await?;
         if complete {
             return Ok(0);
         }
+        // Page back from the contiguous mark, not the oldest cached message: stray old
+        // messages (a reaction refetch, a search hit) must not hide the gap behind them.
         let page = self
             .chat
             .list_messages(
@@ -965,13 +1048,18 @@ impl Engine {
                 &ListMessages {
                     page_size: OLDER_PAGE,
                     newest_first: true,
-                    filter: oldest.map(|o| older_than_filter(&ts::format(o))),
+                    filter: low_water.map(|o| older_than_filter(&ts::format(o))),
                     ..Default::default()
                 },
             )
             .await?;
         let n = page.items.len() as u32;
         let done = page.next().is_none();
+        let new_low = page
+            .items
+            .iter()
+            .filter_map(|m| m.create_time.as_deref().and_then(ts::parse))
+            .min();
         let events: Vec<Event> = page.items.into_iter().map(Event::MessageUpserted).collect();
         let me = self.me();
         let space_owned = space.to_owned();
@@ -979,8 +1067,11 @@ impl Engine {
             .call(move |c| {
                 let tx = c.transaction()?;
                 apply(&tx, &events, &me)?;
+                if let Some(low) = new_low {
+                    write::set_low_water(&tx, &space_owned, low)?;
+                }
                 if done {
-                    write::set_history_complete(&tx, &space_owned)?;
+                    write::set_history_complete(&tx, &space_owned, true)?;
                 }
                 tx.commit()?;
                 Ok(())
@@ -1095,7 +1186,15 @@ impl Engine {
     }
 
     async fn deliver(&self, space: &str, thread: Option<&str>, text: &str, client_id: &str, pending: &str) {
-        match self.chat.create_message(space, text, thread, client_id).await {
+        let created = match self.chat.create_message(space, text, thread, client_id).await {
+            // An earlier attempt (retried after a timeout or 5xx) already landed: the client
+            // ID is taken, so fetch that message instead of reporting a failure.
+            Err(e) if e.is_status("ALREADY_EXISTS") => {
+                self.chat.get_message(&format!("{space}/messages/{client_id}")).await
+            }
+            other => other,
+        };
+        match created {
             Ok(mut m) => {
                 if m.client_assigned_message_id.is_none() {
                     m.client_assigned_message_id = Some(client_id.to_owned());
@@ -1329,8 +1428,14 @@ impl Engine {
             let Some(at) = this.read_marks.lock().unwrap().remove(&space) else {
                 return;
             };
-            if let Err(e) = this.chat.update_space_read_state(&space, &ts::format(at + 1)).await {
-                tracing::warn!("mark read failed: {e}");
+            // One retry: otherwise the next reconcile brings the old mark back and the
+            // conversation shows unread again.
+            for wait in [Duration::ZERO, Duration::from_secs(30)] {
+                tokio::time::sleep(wait).await;
+                match this.chat.update_space_read_state(&space, &ts::format(at + 1)).await {
+                    Ok(_) => return,
+                    Err(e) => tracing::warn!("mark read failed: {e}"),
+                }
             }
         });
         Ok(())
@@ -1352,43 +1457,37 @@ impl Engine {
     }
 
     /// Bytes for an attachment, from the disk cache or the API.
+    /// Attachment bytes from the disk cache (a file per resource, named by its hash, with the
+    /// content type beside it) or the API.
+    ///
+    /// The resource name comes from the webview, so it must be one that appears in a cached
+    /// message: otherwise a crafted name (`../spaces?...`) would let the page read any Chat
+    /// endpoint with the user's token.
     pub async fn media(&self, cache_dir: &std::path::Path, resource: &str) -> Result<(Vec<u8>, Option<String>)> {
         use sha2::{Digest, Sha256};
+        let r = resource.to_owned();
+        let known = self.db.call(move |c| read::is_known_attachment(c, &r)).await?;
+        let shape_ok = !resource.is_empty()
+            && !resource.contains("..")
+            && resource
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "/+-_.=".contains(c));
+        if !known || !shape_ok {
+            return Err(Error::Other("unknown attachment".into()));
+        }
         let key = format!("{:x}", Sha256::digest(resource.as_bytes()));
         let path = cache_dir.join(&key);
-        let r = resource.to_owned();
-        let cached: Option<Option<String>> = self
-            .db
-            .call(move |c| {
-                Ok(
-                    c.query_row("SELECT mime FROM media_cache WHERE resource = ?1", [&r], |x| x.get(0))
-                        .ok(),
-                )
-            })
-            .await?;
-        if let Some(mime) = cached
-            && let Ok(bytes) = tokio::fs::read(&path).await
-        {
-            let r = resource.to_owned();
-            let p = path.to_string_lossy().to_string();
-            let len = bytes.len() as i64;
-            let m = mime.clone();
-            let _ = self
-                .db
-                .call(move |c| write::touch_media(c, &r, &p, m.as_deref(), len, ts::now()))
-                .await;
+        let mime_path = cache_dir.join(format!("{key}.type"));
+        if let Ok(bytes) = tokio::fs::read(&path).await {
+            let mime = tokio::fs::read_to_string(&mime_path).await.ok();
             return Ok((bytes, mime));
         }
         let (bytes, mime) = self.chat.download_media(resource).await?;
         tokio::fs::create_dir_all(cache_dir).await?;
         tokio::fs::write(&path, &bytes).await?;
-        let r = resource.to_owned();
-        let p = path.to_string_lossy().to_string();
-        let len = bytes.len() as i64;
-        let m = mime.clone();
-        self.db
-            .call(move |c| write::touch_media(c, &r, &p, m.as_deref(), len, ts::now()))
-            .await?;
+        if let Some(m) = &mime {
+            tokio::fs::write(&mime_path, m).await?;
+        }
         Ok((bytes, mime))
     }
 
@@ -1404,6 +1503,15 @@ impl Engine {
     pub fn message_view(&self, name: &str) -> Result<Option<MessageView>> {
         Ok(self.message_views_by_name(&[name.to_owned()])?.into_iter().next())
     }
+}
+
+/// Errors that mean "live events are not set up for this project/user" rather than a
+/// passing problem: the Chat app is missing (404), or permission is lacking (403).
+fn is_config_error(e: &Error) -> bool {
+    matches!(e.http_status(), Some(403 | 404))
+        || e.is_status("PERMISSION_DENIED")
+        || e.is_status("NOT_FOUND")
+        || e.is_status("FAILED_PRECONDITION")
 }
 
 fn short(e: &Error) -> String {
