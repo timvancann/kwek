@@ -11,6 +11,14 @@
   import { handleKey } from "$lib/keys";
   import { app } from "$lib/state.svelte";
 
+  // Below 1000px the thread panel overlays the channel; the channel is then inert so
+  // keyboard focus cannot land on controls hidden behind the panel.
+  onMount(() => {
+    const mq = window.matchMedia("(max-width: 1000px)");
+    app.narrow = mq.matches;
+    mq.addEventListener("change", (e) => (app.narrow = e.matches));
+  });
+
   onMount(() => {
     void app.init();
     const onKey = (e: KeyboardEvent) => handleKey(e);
@@ -26,7 +34,9 @@
 {:else}
   <div class="relative flex h-full">
     <Sidebar />
-    <ChannelView />
+    <div class="flex min-w-0 flex-1" inert={app.narrow && app.thread !== null}>
+      <ChannelView />
+    </div>
     <ThreadPanel />
   </div>
   <QuickSwitcher />

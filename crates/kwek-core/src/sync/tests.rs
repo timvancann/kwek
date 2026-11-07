@@ -621,6 +621,36 @@ async fn load_older_pages_back_and_marks_complete() {
     );
 }
 
+/// Polling refetches each space's newest page every minute; that must not undo history
+/// already paged back.
+#[tokio::test]
+async fn repeated_initial_fetch_keeps_paged_history() {
+    let f = world();
+    {
+        let mut w = f.0.lock().unwrap();
+        for i in 0..250 {
+            let at = ts::format(t("2023-01-01T00:00:00Z") + i as i64 * MINUTE);
+            w.messages.push(message(
+                "spaces/team",
+                &format!("old{i}"),
+                "users/ada",
+                &at,
+                "old",
+                &format!("o{i}"),
+                false,
+            ));
+        }
+    }
+    let (e, _) = engine(&f).await;
+    e.bootstrap().await.unwrap();
+    while e.load_older("spaces/team").await.unwrap() > 0 {}
+    let before = e.db.with(|c| read::history_bounds(c, "spaces/team")).unwrap();
+    assert!(before.1, "fully paged back");
+    e.initial_fetch("spaces/team", ME, false).await.unwrap();
+    let after = e.db.with(|c| read::history_bounds(c, "spaces/team")).unwrap();
+    assert_eq!(after, before);
+}
+
 #[test]
 fn search_parser() {
     let (q, f) = parse_search("from:ada in:tech before:2024-06-01 deploy green");

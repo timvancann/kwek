@@ -45,6 +45,7 @@ pub struct SpaceRow {
     pub mentions: i64,
     pub last_read_us: Option<Micros>,
     pub newest_us: Option<Micros>,
+    pub low_water_us: Option<Micros>,
 }
 
 const SPACE_SELECT: &str = "
@@ -57,7 +58,8 @@ SELECT s.name, s.space_type, s.display_name, s.threaded, s.last_active_us, s.las
          WHERE m.space = s.name AND m.mentions_me = 1 AND m.sender != ?1 AND m.delete_us IS NULL
            AND r.last_read_us IS NOT NULL AND m.create_us > r.last_read_us),
        r.last_read_us,
-       (SELECT max(create_us) FROM message m WHERE m.space = s.name AND m.local_state != 'ghost')
+       (SELECT max(create_us) FROM message m WHERE m.space = s.name AND m.local_state != 'ghost'),
+       s.low_water_us
 FROM space s LEFT JOIN space_read_state r ON r.space = s.name";
 
 fn space_row(r: &Row) -> rusqlite::Result<SpaceRow> {
@@ -78,6 +80,7 @@ fn space_row(r: &Row) -> rusqlite::Result<SpaceRow> {
         mentions: r.get(13)?,
         last_read_us: r.get(14)?,
         newest_us: r.get(15)?,
+        low_water_us: r.get(16)?,
     })
 }
 
@@ -213,7 +216,9 @@ pub fn history_bounds(c: &Connection, space: &str) -> Result<(Option<Micros>, bo
 /// An attachment resource name that appears in a cached message: the only media the
 /// webview may ask Rust to fetch with the user's token.
 pub fn is_known_attachment(c: &Connection, resource: &str) -> Result<bool> {
-    let needle = serde_json::to_string(resource)?;
+    // Match the resourceName field itself, not any string (a sender-chosen file name could
+    // otherwise be made to look like a resource).
+    let needle = format!("\"resourceName\":{}", serde_json::to_string(resource)?);
     Ok(c.query_row(
         "SELECT 1 FROM message WHERE attachments IS NOT NULL AND instr(attachments, ?1) > 0 LIMIT 1",
         [needle],

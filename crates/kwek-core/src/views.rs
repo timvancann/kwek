@@ -43,6 +43,9 @@ pub struct SpaceSummary {
     pub member_count: Option<u32>,
     pub web_url: Option<String>,
     pub history_complete: bool,
+    /// Cached history is contiguous from here to now; older cached rows may have gaps.
+    #[ts(type = "number | null")]
+    pub low_water_us: Option<Micros>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -232,6 +235,7 @@ impl Builder<'_> {
             member_count: s.member_count.map(|n| n as u32),
             web_url: space_web,
             history_complete: s.history_complete,
+            low_water_us: s.low_water_us,
         }
     }
 

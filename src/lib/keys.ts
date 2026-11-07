@@ -29,7 +29,9 @@ function move(dir: 1 | -1) {
   if (app.zone === "sidebar") {
     const order = app.sidebarOrder;
     if (order.length === 0) return;
-    app.sidebarIndex = Math.min(order.length - 1, Math.max(0, app.sidebarIndex + dir));
+    const at = order.findIndex((s) => s.name === (app.sidebarFocus ?? app.current));
+    const next = at < 0 ? 0 : Math.min(order.length - 1, Math.max(0, at + dir));
+    app.sidebarFocus = order[next].name;
     return;
   }
   if (app.zone !== "thread") app.zone = "messages";
@@ -44,7 +46,7 @@ function edge(last: boolean) {
   if (app.zone === "sidebar") {
     const order = app.sidebarOrder;
     if (order.length === 0) return;
-    app.sidebarIndex = last ? order.length - 1 : 0;
+    app.sidebarFocus = order[last ? order.length - 1 : 0].name;
     return;
   }
   if (app.zone !== "thread") app.zone = "messages";
@@ -57,8 +59,15 @@ function focusComposer() {
 }
 
 function zoneLeft() {
-  if (app.zone === "thread" || app.zone === "threadComposer") app.zone = "messages";
-  else app.zone = "sidebar";
+  if (app.zone === "thread" || app.zone === "threadComposer") {
+    // In a narrow window the channel sits behind the overlay: leaving means closing.
+    if (app.narrow) app.closeThread();
+    else app.zone = "messages";
+  } else {
+    // Entering the sidebar starts at the open conversation.
+    app.sidebarFocus = app.current;
+    app.zone = "sidebar";
+  }
 }
 
 function zoneRight() {
@@ -101,8 +110,8 @@ export const bindings: Binding[] = [
     group: "Messages",
     run: () => {
       if (app.zone === "sidebar") {
-        const s = app.sidebarOrder[app.sidebarIndex];
-        if (s) void app.open(s.name).then(() => (app.zone = "composer"));
+        const s = app.sidebarFocus ?? app.current;
+        if (s) void app.open(s).then(() => (app.zone = "composer"));
         return;
       }
       withSelected((m) => {

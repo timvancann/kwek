@@ -13,12 +13,15 @@
 		description = "Search for a command to run...",
 		showCloseButton = false,
 		portalProps,
+		onCloseAutoFocus,
 		children,
 		class: className,
 		...restProps
 	}: WithoutChildrenOrChild<DialogPrimitive.RootProps> &
 		WithoutChildrenOrChild<CommandPrimitive.RootProps> & {
 			portalProps?: DialogPrimitive.PortalProps;
+			/** kwek: lets the caller decide where focus goes when the dialog closes. */
+			onCloseAutoFocus?: DialogPrimitive.ContentProps["onCloseAutoFocus"];
 			children: Snippet;
 			title?: string;
 			description?: string;
@@ -36,6 +39,7 @@
 		class={cn("rounded-xl! top-1/3 translate-y-0 overflow-hidden p-0", className)}
 		{showCloseButton}
 		{portalProps}
+		{onCloseAutoFocus}
 	>
 		<Command {...restProps} bind:value bind:ref {children} />
 	</Dialog.Content>

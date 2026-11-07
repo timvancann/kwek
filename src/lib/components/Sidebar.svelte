@@ -14,7 +14,7 @@
   let nav: HTMLElement | undefined = $state();
 
   /** Highlighted row in sidebar zone (j/k), else the open conversation. */
-  const focusName = $derived(app.zone === "sidebar" ? (app.sidebarOrder[app.sidebarIndex]?.name ?? app.current) : app.current);
+  const focusName = $derived(app.zone === "sidebar" ? (app.sidebarFocus ?? app.current) : app.current);
 
   // Focus follows the keyboard highlight while the sidebar is the active zone.
   $effect(() => {
@@ -66,19 +66,22 @@
       {@const total = sectionTotal(section.items)}
       <div class="mt-3 first:mt-1">
         <div class="flex items-center gap-1">
-          <button
-            class="flex h-6 min-w-0 flex-1 items-center gap-1 rounded-sm px-2 text-left text-muted-foreground hover:text-foreground"
-            aria-expanded={!app.collapsed[section.id]}
-            onclick={() => (app.collapsed[section.id] = !app.collapsed[section.id])}
-          >
-            <ChevronDown class={cn("size-3 shrink-0 transition-transform", app.collapsed[section.id] && "-rotate-90")} aria-hidden="true" />
-            <h2 class="m-0 truncate text-[12px] font-semibold">{section.title}</h2>
-            {#if app.collapsed[section.id] && total > 0}
-              <span class="ml-auto rounded-full bg-badge px-1.5 text-[11px] leading-[18px] font-semibold text-badge-foreground tabular-nums"
-                >{total}<span class="sr-only"> unread</span></span
-              >
-            {/if}
-          </button>
+          <!-- The heading wraps the toggle so heading navigation still finds it. -->
+          <h2 class="m-0 min-w-0 flex-1 text-[12px] font-semibold">
+            <button
+              class="flex h-6 w-full items-center gap-1 rounded-sm px-2 text-left text-muted-foreground hover:text-foreground"
+              aria-expanded={!app.collapsed[section.id]}
+              onclick={() => (app.collapsed[section.id] = !app.collapsed[section.id])}
+            >
+              <ChevronDown class={cn("size-3 shrink-0 transition-transform", app.collapsed[section.id] && "-rotate-90")} aria-hidden="true" />
+              <span class="truncate">{section.title}</span>
+              {#if app.collapsed[section.id] && total > 0}
+                <span class="ml-auto rounded-full bg-badge px-1.5 text-[11px] leading-[18px] font-semibold text-badge-foreground tabular-nums"
+                  >{total}<span class="sr-only"> unread</span></span
+                >
+              {/if}
+            </button>
+          </h2>
           {#if section.id === "spaces" && !app.collapsed[section.id]}
             <button
               class="h-6 shrink-0 rounded-sm px-2 text-[11px] text-muted-foreground hover:bg-sidebar-hover hover:text-foreground"
@@ -100,7 +103,7 @@
                   onclick={() => void app.open(s.name)}
                   onfocus={() => {
                     app.zone = "sidebar";
-                    app.sidebarIndex = Math.max(0, app.sidebarOrder.findIndex((x) => x.name === s.name));
+                    app.sidebarFocus = s.name;
                   }}
                   class={cn(
                     "flex h-7 w-full items-center gap-2 rounded-md px-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",

@@ -66,9 +66,10 @@
     <!-- Focusable so the list scrolls from the keyboard when the window is short. -->
     <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
     <div class="max-h-[min(70vh,560px)] overflow-y-auto rounded-sm" tabindex="0" role="region" aria-label="Shortcut list">
-      <dl class="m-0 grid grid-cols-[5.5rem_1fr] items-baseline gap-x-4 gap-y-1">
-        {#each groups as g (g)}
-          <dt class="col-span-2 mt-3 mb-0.5 text-[12px] font-semibold text-muted-foreground first:mt-0">{g}</dt>
+      {#each groups as g, gi (g)}
+        <h3 class="mb-1 text-[12px] font-semibold text-muted-foreground" class:mt-3={gi > 0}>{g}</h3>
+        <!-- Same fixed key column in every group, so the descriptions line up. -->
+        <dl class="m-0 grid grid-cols-[5.5rem_1fr] items-baseline gap-x-4 gap-y-1">
           {#each bindings.filter((b) => b.group === g && b.keys !== "i") as b (b.keys)}
             <dt>
               <kbd class="inline-block min-w-7 rounded border border-input px-1.5 text-center font-sans text-[12px]">{b.keys}</kbd>
@@ -78,8 +79,8 @@
             </dt>
             <dd class="m-0">{b.label}</dd>
           {/each}
-        {/each}
-      </dl>
+        </dl>
+      {/each}
     </div>
   </Dialog.Content>
 </Dialog.Root>

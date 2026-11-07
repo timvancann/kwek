@@ -50,7 +50,8 @@ class AppState {
   selected = $state<string | null>(null);
   threadSelected = $state<string | null>(null);
   zone = $state<Zone>("composer");
-  sidebarIndex = $state(0);
+  /** The conversation highlighted by j/k in the sidebar (a name, so reordering keeps it). */
+  sidebarFocus = $state<string | null>(null);
   overlay = $state<Overlay>(null);
   /** Where the read marker sat when the space was opened ("New" divider). */
   newMarker = $state<Record<string, number | null>>({});
@@ -66,6 +67,8 @@ class AppState {
   /** Bumped to ask the active zone to take focus again (after a dialog closes). */
   focusNonce = $state(0);
   collapsed = $state<Record<string, boolean>>({});
+  /** Window under 1000px: the thread panel overlays the channel. */
+  narrow = $state(false);
   alphabetical = $state(false);
 
   currentSpace = $derived(this.spaces.find((s) => s.name === this.current) ?? null);
@@ -150,7 +153,7 @@ class AppState {
       this.selected = null;
       // Unknown until the list has restored its scroll position; it reports back.
       this.atBottom = false;
-      this.sidebarIndex = Math.max(0, this.sidebarOrder.findIndex((x) => x.name === space));
+      this.sidebarFocus = space;
       if (this.thread && this.thread.space !== space) this.closeThread();
       try {
         this.messages[space] = await api.getMessages(space, null, PAGE);
@@ -175,7 +178,11 @@ class AppState {
     try {
       const oldest = list[0]?.createUs ?? null;
       let older = oldest ? await api.getMessages(space, oldest, PAGE) : [];
-      if (older.length === 0 && !this.currentSpace?.historyComplete) {
+      // The cache is contiguous only down to the low-water mark. A short page, or one that
+      // reaches below the mark, may hide a gap: page the API back first, then read again.
+      const lw = this.currentSpace?.lowWaterUs ?? null;
+      const crossesGap = older.length < PAGE || (lw !== null && older[0] !== undefined && older[0].createUs < lw);
+      if (crossesGap && !this.currentSpace?.historyComplete) {
         const n = await api.loadOlder(space);
         if (n > 0 && oldest) older = await api.getMessages(space, oldest, PAGE);
       }
@@ -257,7 +264,15 @@ class AppState {
       }
       this.messages[p.space] = list.filter((m) => !drop.has(m.name));
     }
-    if (this.thread) this.thread.messages = this.thread.messages.filter((m) => !drop.has(m.name));
+    if (this.thread) {
+      const tl = this.thread.messages;
+      if (this.threadSelected && drop.has(this.threadSelected)) {
+        const i = tl.findIndex((m) => m.name === this.threadSelected);
+        const rest = tl.filter((m) => !drop.has(m.name));
+        this.threadSelected = rest[Math.min(i, rest.length - 1)]?.name ?? null;
+      }
+      this.thread.messages = tl.filter((m) => !drop.has(m.name));
+    }
   }
 
   /** At the bottom of the open space with the window focused: mark it read. */

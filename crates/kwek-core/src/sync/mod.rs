@@ -183,12 +183,7 @@ impl Engine {
             t.logout().await?;
         }
         self.db.wipe()?;
-        if let Some(dir) = &self.media_dir
-            && let Err(e) = std::fs::remove_dir_all(dir)
-            && e.kind() != std::io::ErrorKind::NotFound
-        {
-            tracing::warn!("could not clear media cache: {e}");
-        }
+        self.clear_media();
         *self.me.lock().unwrap() = String::new();
         self.own_subs.lock().unwrap().clear();
         self.sink.spaces_changed(vec![]);
@@ -196,6 +191,15 @@ impl Engine {
         self.sink.badge(0);
         self.set_status("authRequired", None);
         Ok(())
+    }
+
+    fn clear_media(&self) {
+        if let Some(dir) = &self.media_dir
+            && let Err(e) = std::fs::remove_dir_all(dir)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!("could not clear media cache: {e}");
+        }
     }
 
     async fn ensure_identity(&self) -> Result<String> {
@@ -206,7 +210,11 @@ impl Engine {
         let previous = self.db.call(|c| read::account(c)).await?.map(|a| a.id);
         if previous.as_deref().is_some_and(|prev| prev != id) {
             tracing::info!("different account signed in; wiping the local cache");
-            self.db.wipe()?;
+            let db = self.db.clone();
+            tokio::task::spawn_blocking(move || db.wipe())
+                .await
+                .map_err(|e| Error::Other(e.to_string()))??;
+            self.clear_media();
         }
         self.db
             .call(move |c| {
@@ -384,6 +392,13 @@ impl Engine {
             .db
             .call(move |c| {
                 let tx = c.transaction()?;
+                // Measured before applying: does this page overlap what is cached?
+                let newest_cached: Option<Micros> = tx.query_row(
+                    "SELECT max(create_us) FROM message WHERE space = ?1 AND local_state = 'synced' AND create_us > 0",
+                    [&space_owned],
+                    |r| r.get(0),
+                )?;
+                let (old_low, old_complete) = read::history_bounds(&tx, &space_owned)?;
                 let a = apply(&tx, &events, &me_owned)?;
                 if let Some(members) = &members {
                     write::clear_memberships(&tx, &space_owned)?;
@@ -400,8 +415,16 @@ impl Engine {
                         write::set_dm_peer(&tx, &space_owned, &p)?;
                     }
                 }
-                write::set_history_complete(&tx, &space_owned, complete)?;
-                write::set_low_water(&tx, &space_owned, low_water.unwrap_or(started))?;
+                // Overlap with the cache keeps the contiguous history already earned (this
+                // runs every minute while polling); only a real gap resets the mark.
+                let page_low = low_water.unwrap_or(started);
+                let overlaps = matches!((newest_cached, low_water), (Some(n), Some(l)) if n >= l) || complete;
+                let (low, done) = match old_low {
+                    Some(prev) if overlaps => (prev.min(page_low), old_complete || complete),
+                    _ => (page_low, complete),
+                };
+                write::set_history_complete(&tx, &space_owned, done)?;
+                write::set_low_water(&tx, &space_owned, low)?;
                 write::set_space_synced(&tx, &space_owned, started)?;
                 tx.commit()?;
                 Ok(a)
@@ -752,6 +775,9 @@ impl Engine {
                 continue;
             }
             match self.chat.get_space(&space).await {
+                // Bot DMs are filtered out of the space list; adopting them would make them
+                // flap in and out on every event.
+                Ok(s) if s.single_user_bot_dm == Some(true) => {}
                 Ok(s) => {
                     self.db.call(move |c| write::upsert_space(c, &s)).await?;
                     let me = self.me();
@@ -1437,6 +1463,15 @@ impl Engine {
             // conversation shows unread again.
             for wait in [Duration::ZERO, Duration::from_secs(30)] {
                 tokio::time::sleep(wait).await;
+                // A newer mark set meanwhile goes out on its own; retrying this older one
+                // would move the read position backwards at Google.
+                if !wait.is_zero() {
+                    let s = space.clone();
+                    let local = this.db.call(move |c| read::space_read(c, &s)).await.ok().flatten();
+                    if local.is_some_and(|l| l > at) {
+                        return;
+                    }
+                }
                 match this.chat.update_space_read_state(&space, &ts::format(at + 1)).await {
                     Ok(_) => return,
                     Err(e) => tracing::warn!("mark read failed: {e}"),

@@ -13,17 +13,25 @@
     if (!open && app.overlay === "switcher") app.overlay = null;
   });
 
+  let picked = false;
+
   function go(name: string) {
+    picked = true;
     app.overlay = null;
     void app.open(name).then(() => {
       app.zone = "composer";
-      // The dialog returns focus to where it was opened from; take it back after that.
-      setTimeout(() => app.focusNonce++, 0);
+      app.focusNonce++;
     });
+  }
+
+  // After a pick the app moves focus to the composer; don't let the dialog put it back.
+  function onCloseAutoFocus(e: Event) {
+    if (picked) e.preventDefault();
+    picked = false;
   }
 </script>
 
-<Command.Dialog bind:open title="Jump to a conversation" description="Type a name to find a space or person">
+<Command.Dialog bind:open {onCloseAutoFocus} title="Jump to a conversation" description="Type a name to find a space or person">
   <Command.Input placeholder="Jump to a space or person" />
   <Command.List class="max-h-[50vh]">
     <Command.Empty>No conversation with that name.</Command.Empty>

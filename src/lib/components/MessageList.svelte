@@ -34,10 +34,13 @@
 
   const rows = $derived.by(() => {
     const out: Array<
-      { type: "day"; id: string; label: string } | { type: "new"; id: string } | { type: "msg"; id: string; m: MessageView; grouped: boolean }
+      | { type: "day"; id: string; label: string }
+      | { type: "new"; id: string }
+      | { type: "msg"; id: string; m: MessageView; grouped: boolean; pos: number }
     > = [];
     let prev: MessageView | null = null;
     let newShown = false;
+    let pos = 0;
     for (const m of messages) {
       const day = dayKey(m.createUs);
       const dayChanged = !prev || dayKey(prev.createUs) !== day;
@@ -55,7 +58,7 @@
         prev.sender.name === m.sender.name &&
         m.createUs - prev.createUs < 5 * 60 * 1_000_000 &&
         !prev.threadSummary;
-      out.push({ type: "msg", id: m.name, m, grouped });
+      out.push({ type: "msg", id: m.name, m, grouped, pos: ++pos });
       prev = m;
     }
     return out;
@@ -90,14 +93,15 @@
     if (scroller) scroller.scrollTop = top + (scroller.scrollHeight - before);
   }
 
-  // New space: restore the remembered position, or start at the bottom.
-  // Same space, new messages: stay at the bottom if we were there.
+  // Entering a space, once its messages are there: the New line if any, else the
+  // remembered position, else the bottom. Same space, new messages: stay at the bottom
+  // if we were there.
   $effect(() => {
     const count = messages.length;
     const k = key;
     void tick().then(() => {
       if (!scroller) return;
-      if (k !== lastKey) {
+      if (k !== lastKey && count > 0) {
         lastKey = k;
         const mem = scrollMemory.get(k);
         const newLine = scroller.querySelector<HTMLElement>("[data-new-line]");
@@ -111,10 +115,10 @@
           app.atBottom = stickToBottom;
           app.maybeMarkRead();
         }
-      } else if (count > lastCount && stickToBottom) {
+      } else if (k === lastKey && count > lastCount && stickToBottom) {
         scroller.scrollTop = scroller.scrollHeight;
       }
-      lastCount = count;
+      if (k === lastKey) lastCount = count;
     });
   });
 
@@ -172,8 +176,6 @@
   onscroll={onScroll}
   class="min-h-0 flex-1 overflow-y-auto outline-none focus:ring-2 focus:ring-ring focus:ring-inset"
   tabindex="-1"
-  aria-label={label}
-  role="region"
 >
   {#if where === "channel"}
     <div class="px-4 pt-6 pb-2 text-center text-[12px] text-muted-foreground">
@@ -205,7 +207,7 @@
           grouped={r.grouped}
           selected={selected === r.m.name}
           tabbable={tabStop === r.m.name}
-          position={i + 1}
+          position={r.pos}
           {where}
           onselect={() => select(r.m.name)}
         />
