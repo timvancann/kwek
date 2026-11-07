@@ -38,9 +38,33 @@ impl Applied {
     }
 }
 
+/// Applies events to spaces the user is known to belong to (the `space` table, filled from
+/// the user's own `spaces.list`). Events about any other space are dropped: the Pub/Sub
+/// topic is shared, so this is a second line of defence behind the subscription filter.
+/// The one exception is a membership event saying the user joined a space, which is how
+/// new spaces are discovered.
 pub fn apply(c: &Connection, events: &[Event], me: &str) -> Result<Applied> {
     let mut a = Applied::default();
+    let mut known_cache: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
+    let mut known = |space: &str| -> Result<bool> {
+        if let Some(k) = known_cache.get(space) {
+            return Ok(*k);
+        }
+        let k = space_exists(c, space)?;
+        known_cache.insert(space.to_owned(), k);
+        Ok(k)
+    };
     for ev in events {
+        let space = event_space(ev);
+        let joins_me = matches!(ev, Event::MembershipUpserted(mb)
+            if mb.member.as_ref().is_some_and(|u| u.name == me)
+                && matches!(mb.state.as_deref(), None | Some("JOINED")));
+        if let Some(s) = &space {
+            if !joins_me && !known(s)? {
+                tracing::debug!(space = %s, "dropping event for a space that is not ours");
+                continue;
+            }
+        }
         match ev {
             Event::MessageUpserted(m) => {
                 let space = m.space_name();
@@ -135,6 +159,22 @@ pub fn apply(c: &Connection, events: &[Event], me: &str) -> Result<Applied> {
     Ok(a)
 }
 
+/// The space an event is about, if it is about one.
+fn event_space(ev: &Event) -> Option<String> {
+    use crate::chat::space_of;
+    match ev {
+        Event::MessageUpserted(m) => Some(m.space_name()),
+        Event::MessageDeleted { name, .. } => Some(space_of(name)),
+        Event::ReactionCreated(r) | Event::ReactionDeleted(r) => Some(space_of(&r.name)),
+        Event::MembershipUpserted(mb) | Event::MembershipDeleted(mb) => Some(mb.space_name()),
+        Event::SpaceUpdated(s) => Some(s.name.clone()),
+        Event::SpaceDeleted { name } => Some(name.clone()),
+        Event::SpaceReadState(rs) => rs.space_name(),
+        Event::ThreadReadState(tr) => tr.thread_name().map(|t| space_of(&t)),
+        Event::Lifecycle { .. } | Event::Unknown(_) => None,
+    }
+}
+
 fn space_exists(c: &Connection, space: &str) -> Result<bool> {
     use rusqlite::OptionalExtension;
     Ok(c.query_row("SELECT 1 FROM space WHERE name = ?1", [space], |_| Ok(()))
@@ -188,8 +228,17 @@ mod tests {
             .unwrap()
     }
 
-    fn run(events: &[Event]) -> Db {
+    fn db_with_space() -> Db {
         let db = Db::open_in_memory().unwrap();
+        db.with(|c| {
+            write::upsert_space(c, &crate::chat::Space { name: "spaces/S".into(), ..Default::default() })
+        })
+        .unwrap();
+        db
+    }
+
+    fn run(events: &[Event]) -> Db {
+        let db = db_with_space();
         db.with(|c| {
             let tx = c.transaction()?;
             apply(&tx, events, ME)?;
@@ -251,7 +300,7 @@ mod tests {
     #[test]
     fn optimistic_send_dedups_by_client_id_in_both_orders() {
         for echo_first in [false, true] {
-            let db = Db::open_in_memory().unwrap();
+            let db = db_with_space();
             db.with(|c| {
                 write::insert_pending(c, "spaces/S", None, "hello", "client-1", ME, 5)?;
                 Ok(())
@@ -294,6 +343,35 @@ mod tests {
         assert_eq!(id1, id2);
         assert_eq!(fts_hits(&db, "alpha"), 0);
         assert_eq!(fts_hits(&db, "beta"), 1);
+    }
+
+    #[test]
+    fn events_for_foreign_spaces_are_dropped_except_my_join() {
+        let mut foreign = msg(1, "not yours", "2024-01-01T10:00:00Z", None);
+        foreign.name = "spaces/OTHER/messages/1".into();
+        foreign.space = Some(SpaceRef { name: "spaces/OTHER".into() });
+        let join = Event::MembershipUpserted(crate::chat::Membership {
+            name: "spaces/NEW/members/me".into(),
+            state: Some("JOINED".into()),
+            member: Some(User { name: ME.into(), ..Default::default() }),
+            ..Default::default()
+        });
+        let someone_else = Event::MembershipUpserted(crate::chat::Membership {
+            name: "spaces/OTHER/members/x".into(),
+            state: Some("JOINED".into()),
+            member: Some(User { name: "users/x".into(), ..Default::default() }),
+            ..Default::default()
+        });
+        let db = db_with_space();
+        let a = db
+            .with(|c| apply(c, &[Event::MessageUpserted(foreign), join, someone_else], ME))
+            .unwrap();
+        assert!(snapshot(&db).is_empty());
+        assert_eq!(a.joined_spaces.into_iter().collect::<Vec<_>>(), vec!["spaces/NEW".to_string()]);
+        let members: i64 = db
+            .with(|c| Ok(c.query_row("SELECT count(*) FROM membership WHERE space = 'spaces/OTHER'", [], |r| r.get(0))?))
+            .unwrap();
+        assert_eq!(members, 0);
     }
 
     #[test]

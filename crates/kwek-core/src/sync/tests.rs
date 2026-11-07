@@ -235,7 +235,7 @@ fn world() -> Fake {
 
 async fn engine(f: &Fake) -> (Arc<Engine>, Arc<Rec>) {
     let rec = Arc::new(Rec::default());
-    let e = Engine::new(Db::open_in_memory().unwrap(), Arc::new(f.clone()), Arc::new(FakePeople), None, None, rec.clone());
+    let e = Engine::new(Db::open_in_memory().unwrap(), Arc::new(f.clone()), Arc::new(FakePeople), None, None, rec.clone(), None);
     e.ensure_identity().await.unwrap();
     (e, rec)
 }

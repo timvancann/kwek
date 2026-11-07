@@ -73,6 +73,10 @@ pub struct Engine {
     sync_lock: Mutex<()>,
     wake: Notify,
     read_marks: StdMutex<HashMap<String, Micros>>,
+    /// Names of our Workspace Events subscriptions; events from others are dropped.
+    own_subs: StdMutex<Vec<String>>,
+    /// Downloaded attachments; deleted on logout.
+    media_dir: Option<std::path::PathBuf>,
 }
 
 impl Engine {
@@ -83,6 +87,7 @@ impl Engine {
         events: Option<EventsClient>,
         tokens: Option<Arc<TokenManager>>,
         sink: Arc<dyn Sink>,
+        media_dir: Option<std::path::PathBuf>,
     ) -> Arc<Self> {
         let me = db
             .with(|c| read::account(c))
@@ -106,6 +111,8 @@ impl Engine {
             sync_lock: Mutex::new(()),
             wake: Notify::new(),
             read_marks: StdMutex::new(HashMap::new()),
+            own_subs: StdMutex::new(Vec::new()),
+            media_dir,
         })
     }
 
@@ -169,7 +176,15 @@ impl Engine {
             t.logout().await?;
         }
         self.db.wipe()?;
+        if let Some(dir) = &self.media_dir {
+            if let Err(e) = std::fs::remove_dir_all(dir) {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    tracing::warn!("could not clear media cache: {e}");
+                }
+            }
+        }
         *self.me.lock().unwrap() = String::new();
+        self.own_subs.lock().unwrap().clear();
         self.sink.spaces_changed(vec![]);
         self.sink.auth(AuthState::SignedOut);
         self.sink.badge(0);
@@ -518,12 +533,28 @@ impl Engine {
         let ev = self.events.as_ref().ok_or_else(|| Error::Other("no events client".into()))?;
         let device = self.device_id().await?;
         let sub = ev.ensure_pubsub(&device).await?;
-        ev.ensure_subscription(SPACES_TARGET, SPACES_EVENT_TYPES, true).await?;
-        if let Err(e) = ev.ensure_subscription(&user_target(&self.me()), USER_EVENT_TYPES, true).await {
-            tracing::info!("user subscription with resource failed ({e}); retrying without");
-            ev.ensure_subscription(&user_target(&self.me()), USER_EVENT_TYPES, false).await?;
-        }
+        let spaces = ev.ensure_subscription(SPACES_TARGET, SPACES_EVENT_TYPES, true).await?;
+        let user = match ev.ensure_subscription(&user_target(&self.me()), USER_EVENT_TYPES, true).await {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::info!("user subscription with resource failed ({e}); retrying without");
+                ev.ensure_subscription(&user_target(&self.me()), USER_EVENT_TYPES, false).await?
+            }
+        };
+        *self.own_subs.lock().unwrap() = vec![spaces.name, user.name];
         Ok(sub)
+    }
+
+    /// The topic is shared by every kwek user in the project, so a device subscription sees
+    /// everyone's events. Only events from our own Events subscriptions are applied.
+    fn is_ours(&self, r: &crate::events::Received) -> bool {
+        let own = self.own_subs.lock().unwrap();
+        let source = r.message.attributes.get("ce-source").map(String::as_str).unwrap_or("");
+        let ours = !source.is_empty() && own.iter().any(|s| !s.is_empty() && source.ends_with(s.as_str()));
+        if !ours {
+            tracing::debug!(%source, "dropping event from a subscription that is not ours");
+        }
+        ours
     }
 
     async fn live(self: &Arc<Self>) -> Result<()> {
@@ -561,7 +592,7 @@ impl Engine {
             if !batch.is_empty() {
                 let mut events = Vec::new();
                 let mut lifecycle = Vec::new();
-                for r in &batch {
+                for r in batch.iter().filter(|r| self.is_ours(r)) {
                     for e in r.decode() {
                         match e {
                             Event::Lifecycle { kind, subscription } => lifecycle.push((kind, subscription)),
