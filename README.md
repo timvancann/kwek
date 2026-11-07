@@ -4,12 +4,13 @@ A keyboard-first macOS client for Google Chat in the example.com Workspace. Taur
 
 ## Use it
 
-Build once, then open `target/release/bundle/macos/kwek.app` (drag it to Applications if you like) and press **Connect to Google**.
+Build and install into `~/Applications`, then open kwek and press **Connect to Google**.
 
 ```sh
-pnpm install
-pnpm tauri build
+just install
 ```
+
+`just bundle` only builds `target/release/bundle/macos/kwek.app`; `just run` runs from source with hot reload.
 
 The build bakes in the OAuth desktop client from `secrets/oauth-client.json` (gitignored; see `docs/setup.md` for the one-time Google Cloud setup). The app is unsigned, which is fine on the Mac that built it.
 
