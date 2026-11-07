@@ -224,9 +224,34 @@ pub async fn download_attachment(
         n += 1;
     }
     tokio::fs::write(&path, bytes).await.map_err(|e| e.to_string())?;
+    // Mark it as downloaded, like a browser does, so Gatekeeper checks it before it can run.
+    // Without the flag, a malicious `.command` or `.app` attachment would open unchecked.
+    if let Err(e) = quarantine(&path) {
+        let _ = tokio::fs::remove_file(&path).await;
+        return Err(format!("Could not mark the download as quarantined, so it was not saved: {e}"));
+    }
     let p = path.to_string_lossy().to_string();
     let _ = app.opener().reveal_item_in_dir(&path);
     Ok(p)
+}
+
+/// Sets `com.apple.quarantine` the way browsers do: flags 0081 (downloaded, not yet
+/// approved), hex timestamp, agent name.
+fn quarantine(path: &std::path::Path) -> std::io::Result<()> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let value = format!("0081;{now:x};kwek;");
+    let status = std::process::Command::new("/usr/bin/xattr")
+        .args(["-w", "com.apple.quarantine", &value])
+        .arg(path)
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other("xattr failed"))
+    }
 }
 
 fn dirs_downloads() -> Option<std::path::PathBuf> {

@@ -1,9 +1,12 @@
 // Time and date formatting. Times are microseconds since the epoch (from Rust).
 
-const time = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" });
-const weekday = new Intl.DateTimeFormat(undefined, { weekday: "long", day: "numeric", month: "long" });
-const fullDate = new Intl.DateTimeFormat(undefined, { weekday: "long", day: "numeric", month: "long", year: "numeric" });
-const longStamp = new Intl.DateTimeFormat(undefined, { dateStyle: "full", timeStyle: "short" });
+// The interface copy is English, so dates are too (a Dutch system locale would otherwise
+// mix "donderdag" into English sentences). en-GB keeps a 24-hour clock and day-month order.
+const LOCALE = "en-GB";
+const time = new Intl.DateTimeFormat(LOCALE, { hour: "2-digit", minute: "2-digit" });
+const weekday = new Intl.DateTimeFormat(LOCALE, { weekday: "long", day: "numeric", month: "long" });
+const fullDate = new Intl.DateTimeFormat(LOCALE, { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+const longStamp = new Intl.DateTimeFormat(LOCALE, { dateStyle: "full", timeStyle: "short" });
 
 export const toDate = (us: number) => new Date(us / 1000);
 
