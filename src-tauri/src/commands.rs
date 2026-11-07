@@ -12,14 +12,19 @@ use crate::AppState;
 type Res<T> = Result<T, String>;
 
 fn msg(e: Error) -> String {
+    // The real response always goes to the log; the toast gets a sentence.
+    tracing::warn!("command failed: {e}");
     match e {
         Error::AuthRequired => "Sign in to Google again to continue.".into(),
         Error::NoOAuthClient => "This build has no Google client configured.".into(),
         Error::Network(_) | Error::Timeout => "No connection. Try again when you are back online.".into(),
+        Error::Api { message, .. } if message.contains("Chat app not found") => {
+            "Google Chat refuses this until the kwek Chat app is configured (docs/setup.md, step 3).".into()
+        }
         Error::Api { status: 403, .. } => "Google refused this action (no permission).".into(),
-        Error::Api { status: 404, .. } => "That no longer exists in Google Chat.".into(),
         Error::Api { status: 429, .. } => "Google is rate limiting kwek. Try again in a moment.".into(),
         Error::Api { message, .. } if !message.is_empty() => format!("Google Chat: {message}"),
+        Error::Api { status: 404, .. } => "Google Chat could not find that message or conversation.".into(),
         other => other.to_string(),
     }
 }

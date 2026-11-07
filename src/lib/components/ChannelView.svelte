@@ -16,8 +16,8 @@
 
 {#if s}
   <section class="flex min-w-0 flex-1 flex-col" aria-label={title}>
-    <header data-tauri-drag-region class="flex h-12 shrink-0 items-center gap-2 border-b border-border px-4">
-      <h1 data-tauri-drag-region class="min-w-0 truncate text-[15px] font-semibold">{title}</h1>
+    <header data-tauri-drag-region class="flex h-14 shrink-0 items-center gap-2.5 border-b border-border pr-4 pl-6">
+      <h1 data-tauri-drag-region class="min-w-0 truncate font-display text-[17px] font-semibold">{title}</h1>
       {#if s.kind !== "dm" && s.memberCount}
         <span class="flex items-center gap-1 text-[12px] text-muted-foreground" title="{s.memberCount} members">
           <Users class="size-3.5" aria-hidden="true" />
@@ -51,7 +51,7 @@
   </section>
 {:else}
   <section class="flex flex-1 flex-col">
-    <header data-tauri-drag-region class="h-12 shrink-0 border-b border-border"></header>
+    <header data-tauri-drag-region class="h-14 shrink-0 border-b border-border"></header>
     <div class="flex flex-1 items-center justify-center p-8 text-center text-muted-foreground">
       {#if app.spaces.length === 0}
         <p>Your conversations appear here as soon as the first sync finishes.</p>

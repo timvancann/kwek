@@ -189,7 +189,7 @@
   }
 </script>
 
-<div class="relative px-4 pb-3">
+<div class="relative px-6 pt-1 pb-5">
   {#if suggestions.length}
     <ul
       id={listId}
@@ -225,7 +225,7 @@
 
   <div
     class={cn(
-      "flex items-end gap-2 rounded-lg border bg-background px-3 py-2 focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/20",
+      "flex items-end gap-2 rounded-xl border bg-background py-2.5 pr-2.5 pl-4 shadow-xs focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/20",
       editing ? "border-highlight-strong" : "border-input",
     )}
   >
@@ -248,10 +248,10 @@
       aria-activedescendant={suggestions.length ? `${listId}-${active}` : undefined}
       placeholder={label}
       spellcheck="true"
-      class="selectable max-h-[40vh] min-h-5 flex-1 resize-none bg-transparent leading-5 outline-none placeholder:text-muted-foreground"
+      class="selectable max-h-[40vh] min-h-6 flex-1 resize-none self-center bg-transparent text-[15px] leading-6 outline-none placeholder:text-muted-foreground"
     ></textarea>
     <button
-      class="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground enabled:hover:bg-accent enabled:hover:text-accent-foreground disabled:opacity-40"
+      class="inline-flex size-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground enabled:bg-primary enabled:text-primary-foreground enabled:hover:bg-primary/85 disabled:opacity-40"
       aria-label={editing ? "Save edit" : "Send"}
       title={editing ? "Save (Enter)" : "Send (Enter)"}
       disabled={!text.trim()}

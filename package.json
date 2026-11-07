@@ -22,6 +22,9 @@
     "vite": "^8.3.6"
   },
   "dependencies": {
+    "@fontsource-variable/jetbrains-mono": "^5.3.0",
+    "@fontsource-variable/plus-jakarta-sans": "^5.3.0",
+    "@fontsource/poppins": "^5.3.0",
     "@lucide/svelte": "^1.70.0",
     "@tauri-apps/api": "^2.12.4",
     "@tauri-apps/plugin-opener": "^2.7.2",

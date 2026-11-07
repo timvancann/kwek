@@ -1520,9 +1520,13 @@ impl Engine {
         let mime_path = cache_dir.join(format!("{key}.type"));
         if let Ok(bytes) = tokio::fs::read(&path).await {
             let mime = tokio::fs::read_to_string(&mime_path).await.ok();
+            let mime = sniff_image(&bytes).map(str::to_owned).or(mime);
             return Ok((bytes, mime));
         }
         let (bytes, mime) = self.chat.download_media(resource).await?;
+        // Google serves media as application/octet-stream, which WebKit will not draw in an
+        // <img>; the bytes say what the image really is.
+        let mime = sniff_image(&bytes).map(str::to_owned).or(mime);
         tokio::fs::create_dir_all(cache_dir).await?;
         tokio::fs::write(&path, &bytes).await?;
         if let Some(m) = &mime {
@@ -1542,6 +1546,17 @@ impl Engine {
 
     pub fn message_view(&self, name: &str) -> Result<Option<MessageView>> {
         Ok(self.message_views_by_name(&[name.to_owned()])?.into_iter().next())
+    }
+}
+
+/// The image type from the file's first bytes.
+fn sniff_image(b: &[u8]) -> Option<&'static str> {
+    match b {
+        [0x89, b'P', b'N', b'G', ..] => Some("image/png"),
+        [0xFF, 0xD8, 0xFF, ..] => Some("image/jpeg"),
+        [b'G', b'I', b'F', b'8', ..] => Some("image/gif"),
+        [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P', ..] => Some("image/webp"),
+        _ => None,
     }
 }
 

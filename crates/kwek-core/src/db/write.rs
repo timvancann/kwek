@@ -37,10 +37,13 @@ pub fn mentions(m: &Message, me: &str) -> bool {
                 Some(n) if n == me || n == "users/all"
             )
     });
-    let by_text = m
-        .formatted_text
-        .as_deref()
-        .is_some_and(|t| t.contains(&format!("<{me}>")) || t.contains("<users/all>"));
+    let by_text = m.formatted_text.as_deref().is_some_and(|t| {
+        // Both the plain `<users/ID>` form and Chat's Markdown export
+        // `<chat-user data-user="users/ID">`.
+        [me, "users/all"]
+            .iter()
+            .any(|u| t.contains(&format!("<{u}>")) || t.contains(&format!("data-user=\"{u}\"")))
+    });
     by_annotation || by_text
 }
 

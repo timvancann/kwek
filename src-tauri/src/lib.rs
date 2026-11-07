@@ -74,14 +74,18 @@ fn init_logging(dir: &std::path::Path) -> tracing_appender::non_blocking::Worker
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(w) = app.get_webview_window("main") {
-                let _ = w.unminimize();
-                let _ = w.show();
-                let _ = w.set_focus();
-            }
-        }))
+    let builder = tauri::Builder::default();
+    // Debug builds run next to the installed app (own data folder, see setup), so only
+    // release builds are single-instance.
+    #[cfg(not(debug_assertions))]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        if let Some(w) = app.get_webview_window("main") {
+            let _ = w.unminimize();
+            let _ = w.show();
+            let _ = w.set_focus();
+        }
+    }));
+    builder
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_opener::init())
         .register_asynchronous_uri_scheme_protocol("media", |ctx, request, responder| {
@@ -112,6 +116,9 @@ pub fn run() {
         })
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
+            // Debug builds keep their own database and tokens, apart from the installed app.
+            #[cfg(debug_assertions)]
+            let data_dir = data_dir.join("dev");
             let log_dir = app.path().app_log_dir()?;
             std::fs::create_dir_all(&data_dir)?;
             std::fs::create_dir_all(&log_dir)?;

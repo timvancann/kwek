@@ -85,20 +85,20 @@
   onclick={onselect}
   onfocus={onselect}
   class={cn(
-    "group relative flex gap-2.5 px-4 outline-none focus:ring-2 focus:ring-ring focus:ring-inset",
-    grouped ? "py-0.5" : "pt-2 pb-0.5",
+    "group relative flex gap-3 px-6 outline-none focus:ring-2 focus:ring-ring focus:ring-inset",
+    grouped ? "py-0.5" : "mt-2 pt-2 pb-1",
     m.mentionsMe && !m.deleted && "bg-highlight/70",
     selected ? "bg-accent-soft" : "hover:bg-muted",
     m.localState === "pending" && "opacity-60",
   )}
 >
-  <div class="w-8 shrink-0">
+  <div class="w-9 shrink-0">
     {#if !grouped}
-      <Avatar user={m.sender} />
+      <Avatar user={m.sender} size={36} class="mt-0.5" />
     {:else}
       <time
         datetime={new Date(m.createUs / 1000).toISOString()}
-        class={cn("block pt-0.5 text-right text-[11px] leading-5 text-muted-foreground opacity-0 group-hover:opacity-100", selected && "opacity-100")}
+        class={cn("block pt-1 text-right text-[11px] leading-5 text-muted-foreground opacity-0 group-hover:opacity-100", selected && "opacity-100")}
         >{clock(m.createUs)}</time
       >
     {/if}
@@ -107,7 +107,7 @@
   <div class="min-w-0 flex-1">
     {#if !grouped}
       <div class="flex items-baseline gap-2">
-        <span id="{uid}-who" class="font-semibold">{m.sender.displayName}</span>
+        <span id="{uid}-who" class="text-[15px] font-semibold">{m.sender.displayName}</span>
         <time datetime={new Date(m.createUs / 1000).toISOString()} class="text-[12px] text-muted-foreground" title={stamp(m.createUs)}
           ><span aria-hidden="true">{clock(m.createUs)}</span><span id="{uid}-when" class="sr-only">{stamp(m.createUs)}</span></time
         >
@@ -119,9 +119,9 @@
     <span id="{uid}-state" class="sr-only">{state}</span>
 
     {#if m.deleted}
-      <p id="{uid}-body" class="my-0 text-muted-foreground italic">Message deleted</p>
+      <p id="{uid}-body" class="my-0 text-[15px] text-muted-foreground italic">Message deleted</p>
     {:else}
-      <div id="{uid}-body" class="selectable max-w-[80ch] leading-[1.5] break-words">
+      <div id="{uid}-body" class="selectable max-w-[75ch] text-[15px] leading-[1.6] break-words">
         <Blocks blocks={m.blocks} tabbable={selected} />
         {#if m.edited}<span class="ml-1 text-[12px] text-muted-foreground" aria-hidden="true">(edited)</span>{/if}
       </div>
@@ -136,7 +136,7 @@
       {/if}
 
       {#if m.attachments.length}
-        <div class="mt-1.5 flex flex-wrap gap-2">
+        <div class="mt-2 flex flex-wrap gap-2">
           {#each m.attachments as a, i (i)}
             {#if a.kind === "image" && a.mediaUrl}
               <button
@@ -166,12 +166,12 @@
       {/if}
 
       {#if m.reactions.length}
-        <div class="mt-1 flex flex-wrap gap-1">
+        <div class="mt-1.5 flex flex-wrap gap-1.5">
           {#each m.reactions as r (r.key)}
             <button
               tabindex={inner}
               class={cn(
-                "inline-flex h-6 items-center gap-1 rounded-full border px-2 text-[12px]",
+                "inline-flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-[13px]",
                 r.mine ? "border-accent bg-accent-soft text-accent" : "border-border bg-background hover:border-input",
               )}
               aria-pressed={r.mine}
@@ -197,7 +197,7 @@
     {#if m.threadSummary && where === "channel"}
       <button
         tabindex={inner}
-        class="-ml-1 mt-1 flex min-h-6 items-center gap-2 rounded-md px-1 py-0.5 text-[12px] hover:bg-background"
+        class="-ml-1.5 mt-1.5 flex min-h-7 items-center gap-2 rounded-md px-1.5 py-0.5 text-[13px] hover:bg-background"
         onclick={(e) => {
           e.stopPropagation();
           if (m.thread) void app.openThread(m.thread);
@@ -205,7 +205,7 @@
       >
         <span class="flex -space-x-1">
           {#each m.threadSummary.participants as p (p.name)}
-            <Avatar user={p} size={18} class="ring-2 ring-background" />
+            <Avatar user={p} size={20} class="ring-2 ring-background" />
           {/each}
         </span>
         <span class="font-semibold text-accent">
@@ -221,7 +221,7 @@
   {#if !m.deleted && m.localState === "synced"}
     <div
       class={cn(
-        "absolute -top-3 right-4 z-10 hidden items-center rounded-md border border-border bg-background p-0.5 shadow-sm group-hover:flex group-focus-within:flex",
+        "absolute -top-3 right-6 z-10 hidden items-center rounded-md border border-border bg-background p-0.5 shadow-sm group-hover:flex group-focus-within:flex",
         selected && "flex",
       )}
       role="toolbar"

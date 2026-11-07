@@ -132,7 +132,10 @@ pub struct DriveDataRef {
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Emoji {
+    // Sent in reactions.create: absent fields must be omitted, not null.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub unicode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub custom_emoji: Option<CustomEmoji>,
 }
 

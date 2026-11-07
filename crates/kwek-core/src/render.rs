@@ -323,6 +323,26 @@ fn split_text(t: &str, style: Style, ctx: &Ctx) -> Vec<Inline> {
     let mut buf = String::new();
     let mut i = 0;
     while i < s.len() {
+        // Chat's Markdown export writes mentions as <chat-user data-user="users/ID"></chat-user>.
+        if s[i] == '<'
+            && starts_with(&s, i + 1, "chat-user")
+            && let Some((user, label, end)) = chat_user_element(&s, i)
+        {
+            flush(&mut out, &mut buf, style);
+            let id = user.trim_start_matches("users/");
+            let name = if id == "all" {
+                Some("all".to_owned())
+            } else {
+                (ctx.name_of)(&user).or(label)
+            };
+            out.push(Inline::Mention {
+                me: user == ctx.me || id == "all",
+                label: name.unwrap_or_else(|| "Unknown user".to_owned()),
+                user,
+            });
+            i = end;
+            continue;
+        }
         if s[i] == '<'
             && starts_with(&s, i + 1, "users/")
             && let Some(end) = (i + 7..s.len()).find(|&j| s[j] == '>')
@@ -377,6 +397,30 @@ fn split_text(t: &str, style: Style, ctx: &Ctx) -> Vec<Inline> {
     }
     flush(&mut out, &mut buf, style);
     out
+}
+
+/// Parses `<chat-user data-user="users/ID">label</chat-user>` at `i`: (user, inner label,
+/// index after the element). The inner label is usually empty.
+fn chat_user_element(s: &[char], i: usize) -> Option<(String, Option<String>, usize)> {
+    let rest: String = s[i..].iter().collect();
+    let open_end = rest.find('>')?;
+    let open = &rest[..open_end];
+    let attr = open.find("data-user=\"")? + "data-user=\"".len();
+    let user = &open[attr..attr + open[attr..].find('"')?];
+    if !user.starts_with("users/") {
+        return None;
+    }
+    let close = rest.find("</chat-user>")?;
+    if close < open_end {
+        return None;
+    }
+    let inner = rest[open_end + 1..close]
+        .trim()
+        .trim_start_matches('@')
+        .trim()
+        .to_owned();
+    let consumed = rest[..close + "</chat-user>".len()].chars().count();
+    Some((user.to_owned(), (!inner.is_empty()).then_some(inner), i + consumed))
 }
 
 fn flush(out: &mut Vec<Inline>, buf: &mut String, style: Style) {
@@ -677,8 +721,44 @@ mod tests {
                     },
                 ])],
             ),
+            // Chat's actual Markdown export of a mention (seen in the wild).
+            (
+                "en <chat-user data-user=\"users/1\"></chat-user> als we zo payment hebben.",
+                vec![para(vec![
+                    t("en "),
+                    Inline::Mention {
+                        user: "users/1".into(),
+                        label: "Ada".into(),
+                        me: false,
+                    },
+                    t(" als we zo payment hebben."),
+                ])],
+            ),
+            (
+                "<chat-user data-user=\"users/2\"></chat-user>",
+                vec![para(vec![Inline::Mention {
+                    user: "users/2".into(),
+                    label: "Tim".into(),
+                    me: true,
+                }])],
+            ),
+            (
+                "hi <chat-user data-user=\"users/99\">@Grace</chat-user>",
+                vec![para(vec![
+                    t("hi "),
+                    Inline::Mention {
+                        user: "users/99".into(),
+                        label: "Grace".into(),
+                        me: false,
+                    },
+                ])],
+            ),
             // HTML is never interpreted: it stays text.
             ("<b>x</b>", vec![para(vec![t("<b>x</b>")])]),
+            (
+                "<chat-user data-user=\"evil\">x</chat-user>",
+                vec![para(vec![t("<chat-user data-user=\"evil\">x</chat-user>")])],
+            ),
             ("2 * 3 * 4", vec![para(vec![t("2 * 3 * 4")])]),
             ("snake_case_name", vec![para(vec![t("snake_case_name")])]),
         ];

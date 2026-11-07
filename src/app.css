@@ -2,43 +2,46 @@
 @import "tw-animate-css";
 
 /*
- * kwek light theme. shadcn variable names so its components pick the theme up.
- * Boldness lives in one place: highlighter yellow marks what needs you (mentions, the
- * unread line). Everything else is quiet ink on white with a cool grey-green sidebar.
- * Contrast (WCAG 2.2, computed): ink on white 16.1, muted on white 6.7, muted on the active
- * sidebar row 4.8, muted on highlight 5.3, accent on white 6.4, white on accent 6.4,
- * input border on white 3.2 (non-text 3:1).
+ * Mendel Light (a brand palette mockup): black on white, as little colour
+ * as possible, bronze as the one Mendel accent, warning yellow for what needs you (mentions,
+ * the New line). The sidebar takes the warm neutral of Mendel Gold's text colour family.
+ * Mendel Gold (dark, the website's palette) is the natural dark theme later.
+ * shadcn variable names so its components pick the theme up.
+ * Contrast (WCAG 2.2, computed): ink on white 18.9, text-2 on white 8.9, text-2 on the active
+ * sidebar row 6.7, bronze on white 5.9, white on bronze 5.9, ink on warning 9.6, ink on
+ * warning-soft 16.8, input border on white 3.6 (non-text 3:1).
  */
 :root {
   --background: #ffffff;
-  --foreground: #1b2320;
-  --sidebar: #eef2f0;
-  --sidebar-foreground: #1b2320;
-  --sidebar-hover: #e2e8e5;
-  --sidebar-active: #d3ddd9;
-  --muted: #f3f5f4;
-  --muted-foreground: #525f5a;
-  --border: #dde3e0;
-  --input: #87948f;
-  --ring: #0e6b58;
-  --accent: #0e6b58;
+  --foreground: #111111;
+  --sidebar: #f5f4f1;
+  --sidebar-foreground: #111111;
+  --sidebar-hover: #ecebe6;
+  --sidebar-active: #e3e0d9;
+  --muted: #f5f4f1;
+  --muted-foreground: #4a4a4a;
+  --border: #e6e4df;
+  --input: #8a8781;
+  --ring: #8a5a1a;
+  --accent: #8a5a1a;
   --accent-foreground: #ffffff;
-  --accent-soft: #e4f0ec;
-  --primary: #0e6b58;
+  --accent-soft: #f7efe4;
+  --primary: #111111;
   --primary-foreground: #ffffff;
-  --secondary: #f3f5f4;
-  --secondary-foreground: #1b2320;
+  --secondary: #f5f4f1;
+  --secondary-foreground: #111111;
   --destructive: #b42318;
   --destructive-foreground: #ffffff;
+  --success: #1f7a3a;
   --popover: #ffffff;
-  --popover-foreground: #1b2320;
+  --popover-foreground: #111111;
   --card: #ffffff;
-  --card-foreground: #1b2320;
-  --highlight: #fff1b8;
-  --highlight-strong: #f5d659;
-  --badge: #1b2320;
+  --card-foreground: #111111;
+  --highlight: #fff1c7;
+  --highlight-strong: #f9a800;
+  --badge: #111111;
   --badge-foreground: #ffffff;
-  --radius: 6px;
+  --radius: 8px;
   color-scheme: light;
 }
 
@@ -63,6 +66,7 @@
   --color-secondary-foreground: var(--secondary-foreground);
   --color-destructive: var(--destructive);
   --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
   --color-popover: var(--popover);
   --color-popover-foreground: var(--popover-foreground);
   --color-card: var(--card);
@@ -74,8 +78,10 @@
   --radius-sm: calc(var(--radius) - 2px);
   --radius-md: var(--radius);
   --radius-lg: calc(var(--radius) + 2px);
-  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
-  --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+  /* Mendel's type: Plus Jakarta Sans for text, Poppins for headings, JetBrains Mono for code. */
+  --font-sans: "Plus Jakarta Sans Variable", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --font-display: "Poppins", "Plus Jakarta Sans Variable", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, "SF Mono", Menlo, monospace;
 }
 
 @layer base {
@@ -90,8 +96,8 @@
     background: var(--background);
     color: var(--foreground);
     font-family: var(--font-sans);
-    font-size: 13px;
-    line-height: 1.45;
+    font-size: 14px;
+    line-height: 1.5;
     -webkit-font-smoothing: antialiased;
     /* Desktop app: text is selectable inside messages only. */
     user-select: none;

@@ -16,7 +16,7 @@
 
 {#each inlines as i, idx (idx)}
   {#if i.kind === "text"}<span class={cn(i.bold && "font-semibold", i.italic && "italic", i.strike && "line-through")}>{i.text}</span>
-  {:else if i.kind === "code"}<code class="rounded-sm bg-muted px-1 py-px font-mono text-[12px] text-foreground">{i.text}</code>
+  {:else if i.kind === "code"}<code class="rounded-sm bg-muted px-1 py-px font-mono text-[0.85em] text-foreground">{i.text}</code>
   {:else if i.kind === "mention"}<span
       class={cn("rounded-sm px-0.5 font-medium", i.me ? "bg-highlight-strong text-foreground" : "bg-accent-soft text-accent")}
       >@{i.label}</span

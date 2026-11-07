@@ -46,13 +46,13 @@
   const me = $derived(app.auth.state === "signedIn" ? app.auth : null);
 </script>
 
-<nav bind:this={nav} class="flex w-[248px] shrink-0 flex-col bg-sidebar text-sidebar-foreground" aria-label="Conversations">
+<nav bind:this={nav} class="flex w-[268px] shrink-0 flex-col bg-sidebar text-sidebar-foreground" aria-label="Conversations">
   <!-- Room for the window controls; draggable like a title bar. -->
-  <div data-tauri-drag-region class="h-11 shrink-0"></div>
+  <div data-tauri-drag-region class="h-12 shrink-0"></div>
 
-  <div class="px-3 pb-2">
+  <div class="px-3 pb-3">
     <button
-      class="flex h-8 w-full items-center gap-2 rounded-md border border-border bg-background px-2 text-left text-muted-foreground hover:border-input"
+      class="flex h-9 w-full items-center gap-2 rounded-lg border border-border bg-background px-3 text-left text-muted-foreground hover:border-input"
       onclick={() => (app.overlay = "switcher")}
     >
       <Search class="size-3.5" aria-hidden="true" />
@@ -61,10 +61,10 @@
     </button>
   </div>
 
-  <div class="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
+  <div class="min-h-0 flex-1 overflow-y-auto px-3 pb-4">
     {#each app.sections as section (section.id)}
       {@const total = sectionTotal(section.items)}
-      <div class="mt-3 first:mt-1">
+      <div class="mt-5 first:mt-1">
         <div class="flex items-center gap-1">
           <!-- The heading wraps the toggle so heading navigation still finds it. -->
           <h2 class="m-0 min-w-0 flex-1 text-[12px] font-semibold">
@@ -106,14 +106,14 @@
                     app.sidebarFocus = s.name;
                   }}
                   class={cn(
-                    "flex h-7 w-full items-center gap-2 rounded-md px-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
+                    "flex h-8 w-full items-center gap-2.5 rounded-md px-2.5 text-left text-[14.5px] outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
                     active ? "bg-sidebar-active font-semibold" : "hover:bg-sidebar-hover",
                     s.muted && !active && "text-muted-foreground",
                     !s.muted && s.unread > 0 && "font-semibold",
                   )}
                 >
                   {#if s.kind === "dm"}
-                    <Avatar user={{ displayName: s.displayName, avatarUrl: s.avatarUrl }} size={18} />
+                    <Avatar user={{ displayName: s.displayName, avatarUrl: s.avatarUrl }} size={20} />
                   {:else if s.kind === "group"}
                     <UsersRound class="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
                   {:else}

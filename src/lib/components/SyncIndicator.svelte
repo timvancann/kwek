@@ -8,7 +8,7 @@
   const view = $derived.by(() => {
     switch (s.state) {
       case "live":
-        return { dot: "bg-accent", text: "Live", detail: "New messages arrive as they are sent." };
+        return { dot: "bg-success", text: "Live", detail: "New messages arrive as they are sent." };
       case "bootstrapping":
         return { dot: "bg-muted-foreground animate-pulse", text: s.detail ?? "Syncing", detail: "First sync in progress." };
       case "reconciling":

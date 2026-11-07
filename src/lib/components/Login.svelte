@@ -24,7 +24,7 @@
 <main data-tauri-drag-region class="flex h-full items-center justify-center bg-sidebar px-6">
   <div class="w-full max-w-[22rem]">
     <img src="/icon.png" alt="" width="56" height="56" class="mb-5 rounded-xl" draggable="false" />
-    <h1 class="m-0 text-[22px] font-semibold tracking-tight">kwek</h1>
+    <h1 class="m-0 font-display text-[26px] font-bold">kwek</h1>
     <p class="mt-1 mb-6 text-[14px] text-muted-foreground">
       Google Chat for your Mac. Connect your Google account once; after that kwek keeps your conversations in sync and works offline.
     </p>

@@ -1,8 +1,3 @@
-<script lang="ts" module>
-  // Scroll position per space survives switching away and back.
-  const scrollMemory = new Map<string, number | "bottom">();
-</script>
-
 <script lang="ts">
   import type { MessageView } from "$lib/api";
   import { dayKey, dayLabel } from "$lib/format";
@@ -25,9 +20,24 @@
   } = $props();
 
   let scroller: HTMLDivElement | undefined = $state();
+  let content: HTMLDivElement | undefined = $state();
   let lastKey = "";
   let lastCount = 0;
+  /** Following the newest message; content that grows (images loading) keeps us there. */
   let stickToBottom = true;
+
+  function toBottom() {
+    if (scroller) scroller.scrollTop = scroller.scrollHeight;
+  }
+
+  $effect(() => {
+    if (!content) return;
+    const ro = new ResizeObserver(() => {
+      if (stickToBottom) toBottom();
+    });
+    ro.observe(content);
+    return () => ro.disconnect();
+  });
 
   const selected = $derived(where === "thread" ? app.threadSelected : app.selected);
   const zoneActive = $derived(where === "thread" ? app.zone === "thread" : app.zone === "messages");
@@ -75,7 +85,6 @@
   function onScroll() {
     if (!scroller) return;
     stickToBottom = isAtBottom();
-    scrollMemory.set(key, stickToBottom ? "bottom" : scroller.scrollTop);
     if (where === "channel") {
       const was = app.atBottom;
       app.atBottom = stickToBottom;
@@ -93,30 +102,33 @@
     if (scroller) scroller.scrollTop = top + (scroller.scrollHeight - before);
   }
 
-  // Entering a space, once its messages are there: the New line if any, else the
-  // remembered position, else the bottom. Same space, new messages: stay at the bottom
-  // if we were there.
+  // Entering a space, once its messages are there: the New line if there is unread, else
+  // the bottom. New messages: follow them if we were at the bottom, and always after
+  // sending one ourselves.
   $effect(() => {
     const count = messages.length;
     const k = key;
+    const newest = messages[count - 1];
     void tick().then(() => {
       if (!scroller) return;
       if (k !== lastKey && count > 0) {
         lastKey = k;
-        const mem = scrollMemory.get(k);
         const newLine = scroller.querySelector<HTMLElement>("[data-new-line]");
-        if (newLine) {
+        if (newLine && newLine.offsetTop > scroller.clientHeight / 2) {
           // Unread on entry: start at the New line so nothing is marked read unseen.
-          scroller.scrollTop = Math.max(0, newLine.offsetTop - 48);
-        } else if (typeof mem === "number") scroller.scrollTop = mem;
-        else scroller.scrollTop = scroller.scrollHeight;
-        stickToBottom = isAtBottom();
+          scroller.scrollTop = Math.max(0, newLine.offsetTop - 64);
+          stickToBottom = isAtBottom();
+        } else {
+          stickToBottom = true;
+          toBottom();
+        }
         if (where === "channel") {
           app.atBottom = stickToBottom;
           app.maybeMarkRead();
         }
-      } else if (k === lastKey && count > lastCount && stickToBottom) {
-        scroller.scrollTop = scroller.scrollHeight;
+      } else if (k === lastKey && count > lastCount && (stickToBottom || newest?.isOwn)) {
+        stickToBottom = true;
+        toBottom();
       }
       if (k === lastKey) lastCount = count;
     });
@@ -178,7 +190,7 @@
   tabindex="-1"
 >
   {#if where === "channel"}
-    <div class="px-4 pt-6 pb-2 text-center text-[12px] text-muted-foreground">
+    <div class="px-6 pt-8 pb-2 text-center text-[13px] text-muted-foreground">
       {#if app.loadingOlder}
         Loading older messages
       {:else if app.currentSpace?.historyComplete}
@@ -188,16 +200,16 @@
       {/if}
     </div>
   {/if}
-  <div role="feed" aria-label={label} aria-busy={app.loadingOlder}>
+  <div bind:this={content} role="feed" aria-label={label} aria-busy={app.loadingOlder}>
     {#each rows as r, i (r.id)}
       {#if r.type === "day"}
-        <div class="flex items-center gap-3 px-4 pt-4 pb-1" role="separator" aria-label={r.label}>
+        <div class="flex items-center gap-3 px-6 pt-6 pb-1" role="separator" aria-label={r.label}>
           <div class="h-px flex-1 bg-border"></div>
           <span class="text-[12px] font-medium text-muted-foreground" aria-hidden="true">{r.label}</span>
           <div class="h-px flex-1 bg-border"></div>
         </div>
       {:else if r.type === "new"}
-        <div data-new-line class="flex items-center gap-2 px-4 pt-2" role="separator" aria-label="New messages">
+        <div data-new-line class="flex items-center gap-2 px-6 pt-3" role="separator" aria-label="New messages">
           <div class="h-0.5 flex-1 rounded-full bg-highlight-strong"></div>
           <span class="rounded-sm bg-highlight-strong px-1.5 text-[11px] font-semibold text-foreground" aria-hidden="true">New</span>
         </div>
@@ -212,7 +224,7 @@
           onselect={() => select(r.m.name)}
         />
         {#if where === "thread" && i === firstMessageRow && messages.length > 1}
-          <div class="flex items-center gap-3 px-4 py-1.5" role="separator" aria-label="Replies">
+          <div class="flex items-center gap-3 px-6 pt-3 pb-1" role="separator" aria-label="Replies">
             <span class="text-[12px] font-medium text-muted-foreground" aria-hidden="true"
               >{messages.length - 1} {messages.length === 2 ? "reply" : "replies"}</span
             >
@@ -222,5 +234,5 @@
       {/if}
     {/each}
   </div>
-  <div class="h-3"></div>
+  <div class="h-5"></div>
 </div>
