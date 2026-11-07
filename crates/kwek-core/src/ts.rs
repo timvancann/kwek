@@ -12,8 +12,7 @@ pub fn parse(s: &str) -> Option<Micros> {
 }
 
 pub fn format(us: Micros) -> String {
-    let t = OffsetDateTime::from_unix_timestamp_nanos(us as i128 * 1_000)
-        .unwrap_or(OffsetDateTime::UNIX_EPOCH);
+    let t = OffsetDateTime::from_unix_timestamp_nanos(us as i128 * 1_000).unwrap_or(OffsetDateTime::UNIX_EPOCH);
     t.format(&Rfc3339).unwrap_or_default()
 }
 

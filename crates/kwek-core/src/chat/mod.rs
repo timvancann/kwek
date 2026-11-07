@@ -40,13 +40,7 @@ pub trait ChatApi: Send + Sync {
     async fn get_space(&self, name: &str) -> Result<Space>;
     async fn list_messages(&self, space: &str, opts: &ListMessages) -> Result<Page<Message>>;
     async fn get_message(&self, name: &str) -> Result<Message>;
-    async fn create_message(
-        &self,
-        space: &str,
-        text: &str,
-        thread: Option<&str>,
-        client_id: &str,
-    ) -> Result<Message>;
+    async fn create_message(&self, space: &str, text: &str, thread: Option<&str>, client_id: &str) -> Result<Message>;
     async fn update_message_text(&self, name: &str, text: &str) -> Result<Message>;
     async fn delete_message(&self, name: &str) -> Result<()>;
     async fn create_reaction(&self, message: &str, emoji: &Emoji) -> Result<Reaction>;
@@ -99,7 +93,11 @@ impl ChatApi for HttpChat {
         let mut url = format!(
             "{BASE}/{space}/messages?pageSize={}&showDeleted=true&orderBy={}",
             o.page_size.clamp(1, 1000),
-            q(if o.newest_first { "createTime desc" } else { "createTime asc" })
+            q(if o.newest_first {
+                "createTime desc"
+            } else {
+                "createTime asc"
+            })
         );
         if let Some(f) = &o.filter {
             url += &format!("&filter={}", q(f));
@@ -114,13 +112,7 @@ impl ChatApi for HttpChat {
         self.g.get(&format!("{BASE}/{name}")).await
     }
 
-    async fn create_message(
-        &self,
-        space: &str,
-        text: &str,
-        thread: Option<&str>,
-        client_id: &str,
-    ) -> Result<Message> {
+    async fn create_message(&self, space: &str, text: &str, thread: Option<&str>, client_id: &str) -> Result<Message> {
         let mut url = format!("{BASE}/{space}/messages?messageId={}", q(client_id));
         let mut body = json!({ "text": text });
         if let Some(t) = thread {
@@ -181,7 +173,10 @@ impl ChatApi for HttpChat {
     }
 
     async fn update_space_read_state(&self, space: &str, last_read_time: &str) -> Result<SpaceReadState> {
-        let url = format!("{}?updateMask=lastReadTime", me_path(&format!("{space}/spaceReadState")));
+        let url = format!(
+            "{}?updateMask=lastReadTime",
+            me_path(&format!("{space}/spaceReadState"))
+        );
         self.g.patch(&url, &json!({ "lastReadTime": last_read_time })).await
     }
 
@@ -210,9 +205,7 @@ impl ChatApi for HttpChat {
 
     async fn download_media(&self, resource_name: &str) -> Result<(Vec<u8>, Option<String>)> {
         // Resource names may contain '/', which the media path keeps literally.
-        self.g
-            .bytes(&format!("{BASE}/media/{resource_name}?alt=media"))
-            .await
+        self.g.bytes(&format!("{BASE}/media/{resource_name}?alt=media")).await
     }
 }
 

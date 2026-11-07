@@ -5,3 +5,4 @@ target/
 dist/
 .DS_Store
 src-tauri/gen/
+.playwright-mcp/

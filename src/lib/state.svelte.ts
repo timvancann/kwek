@@ -1,0 +1,376 @@
+// UI state. A view over Rust: reads come from commands, changes arrive as events. Nothing
+// here talks to Google or computes unread counts; Rust does.
+import { toast } from "svelte-sonner";
+import {
+  api,
+  errorText,
+  on,
+  type AuthState,
+  type DeletePayload,
+  type MessageView,
+  type NavPayload,
+  type SpaceSummary,
+  type SyncStatus,
+  type UpsertPayload,
+} from "./api";
+import type { Block } from "./bindings/Block";
+import type { Inline } from "./bindings/Inline";
+
+export type Zone = "sidebar" | "messages" | "composer" | "thread" | "threadComposer";
+export type Overlay = null | "switcher" | "search" | "keys";
+
+const PAGE = 100;
+
+function byTime(a: MessageView, b: MessageView) {
+  return a.createUs - b.createUs || a.name.localeCompare(b.name);
+}
+
+function upsertInto(list: MessageView[], m: MessageView): MessageView[] {
+  const i = list.findIndex((x) => x.name === m.name);
+  if (i >= 0) {
+    list[i] = m;
+    return list;
+  }
+  const out = [...list, m];
+  // New messages almost always land at the end; sort only when they do not.
+  if (out.length > 1 && byTime(out[out.length - 2], m) > 0) out.sort(byTime);
+  return out;
+}
+
+class AppState {
+  auth = $state<AuthState>({ state: "signedOut" });
+  ready = $state(false);
+  status = $state<SyncStatus>({ state: "starting", detail: null });
+  spaces = $state<SpaceSummary[]>([]);
+  current = $state<string | null>(null);
+  messages = $state<Record<string, MessageView[]>>({});
+  loadingOlder = $state(false);
+  thread = $state<{ name: string; space: string; messages: MessageView[] } | null>(null);
+  /** Keyboard selection in the channel and the thread panel. */
+  selected = $state<string | null>(null);
+  threadSelected = $state<string | null>(null);
+  zone = $state<Zone>("composer");
+  sidebarIndex = $state(0);
+  overlay = $state<Overlay>(null);
+  /** Where the read marker sat when the space was opened ("New" divider). */
+  newMarker = $state<Record<string, number | null>>({});
+  /** A message to scroll to and select once its space is open (search, notifications). */
+  jumpTo = $state<string | null>(null);
+  /** Composer edit mode: the message being edited, per composer. */
+  editing = $state<{ name: string; text: string; where: "channel" | "thread" } | null>(null);
+  confirmDelete = $state<MessageView | null>(null);
+  confirmSignOut = $state(false);
+  reactTo = $state<MessageView | null>(null);
+  announce = $state("");
+  windowFocused = $state(true);
+
+  currentSpace = $derived(this.spaces.find((s) => s.name === this.current) ?? null);
+  currentMessages = $derived(this.current ? (this.messages[this.current] ?? []) : []);
+
+  /** Sidebar order: Starred, Direct messages (DMs and group chats), Spaces; by activity. */
+  sections = $derived.by(() => {
+    const starred = this.spaces.filter((s) => s.starred);
+    const dms = this.spaces.filter((s) => !s.starred && s.kind !== "space");
+    const rooms = this.spaces.filter((s) => !s.starred && s.kind === "space");
+    return [
+      { id: "starred", title: "Starred", items: starred },
+      { id: "dms", title: "Direct messages", items: dms },
+      { id: "spaces", title: "Spaces", items: rooms },
+    ].filter((s) => s.items.length > 0);
+  });
+  sidebarOrder = $derived(this.sections.flatMap((s) => s.items));
+
+  async init() {
+    await Promise.all([
+      on<SpaceSummary[]>("spaces:changed", (s) => (this.spaces = s)),
+      on<UpsertPayload>("messages:upserted", (p) => this.onUpsert(p)),
+      on<DeletePayload>("messages:deleted", (p) => this.onDelete(p)),
+      on<SyncStatus>("sync:status", (s) => (this.status = s)),
+      on<AuthState>("auth:changed", (a) => {
+        const wasIn = this.auth.state === "signedIn";
+        this.auth = a;
+        if (a.state === "signedIn" && !wasIn) void this.loadSpaces();
+        if (a.state === "signedOut") this.reset();
+      }),
+      on<NavPayload>("nav:open", (n) => void this.open(n.space, n.message ?? null, n.thread ?? null)),
+    ]);
+    window.addEventListener("focus", () => {
+      this.windowFocused = true;
+      this.maybeMarkRead();
+    });
+    window.addEventListener("blur", () => (this.windowFocused = false));
+    this.auth = await api.authStatus();
+    this.status = await api.syncStatus();
+    if (this.auth.state === "signedIn") await this.loadSpaces();
+    this.ready = true;
+  }
+
+  private reset() {
+    this.spaces = [];
+    this.messages = {};
+    this.current = null;
+    this.thread = null;
+    this.selected = null;
+  }
+
+  async loadSpaces() {
+    this.spaces = await api.listSpaces();
+    if (!this.current && this.spaces.length > 0) {
+      await this.open(this.spaces[0].name);
+    }
+  }
+
+  async open(space: string, message: string | null = null, thread: string | null = null) {
+    const s = this.spaces.find((x) => x.name === space);
+    if (this.current !== space) {
+      this.newMarker[space] = s?.unread ? (s.lastReadUs ?? null) : null;
+      this.current = space;
+      this.editing = null;
+      this.selected = null;
+      this.sidebarIndex = Math.max(0, this.sidebarOrder.findIndex((x) => x.name === space));
+      if (this.thread && this.thread.space !== space) this.closeThread();
+      try {
+        this.messages[space] = await api.getMessages(space, null, PAGE);
+      } catch (e) {
+        toast.error(errorText(e));
+      }
+      void api.setOpen(space, this.thread?.name ?? null);
+    }
+    if (thread) await this.openThread(thread);
+    if (message) {
+      this.jumpTo = message;
+      this.selected = message;
+      this.zone = "messages";
+    }
+    this.maybeMarkRead();
+  }
+
+  async loadOlder() {
+    const space = this.current;
+    if (!space || this.loadingOlder) return;
+    const list = this.messages[space] ?? [];
+    this.loadingOlder = true;
+    try {
+      const oldest = list[0]?.createUs ?? null;
+      let older = oldest ? await api.getMessages(space, oldest, PAGE) : [];
+      if (older.length === 0 && !this.currentSpace?.historyComplete) {
+        const n = await api.loadOlder(space);
+        if (n > 0 && oldest) older = await api.getMessages(space, oldest, PAGE);
+      }
+      if (older.length > 0) {
+        const names = new Set((this.messages[space] ?? []).map((m) => m.name));
+        this.messages[space] = [...older.filter((m) => !names.has(m.name)), ...(this.messages[space] ?? [])];
+      }
+    } catch (e) {
+      toast.error(errorText(e));
+    } finally {
+      this.loadingOlder = false;
+    }
+  }
+
+  async openThread(thread: string) {
+    const space = thread.split("/").slice(0, 2).join("/");
+    try {
+      const messages = await api.getThread(thread);
+      this.thread = { name: thread, space, messages };
+      this.threadSelected = null;
+      this.zone = "threadComposer";
+      void api.setOpen(this.current, thread);
+      const last = messages[messages.length - 1];
+      if (last) void api.markThreadRead(thread, last.createUs);
+    } catch (e) {
+      toast.error(errorText(e));
+    }
+  }
+
+  closeThread() {
+    this.thread = null;
+    this.threadSelected = null;
+    if (this.zone === "thread" || this.zone === "threadComposer") this.zone = "messages";
+    void api.setOpen(this.current, null);
+  }
+
+  private onUpsert(p: UpsertPayload) {
+    const loaded = this.messages[p.space];
+    let arrivedFromOthers: MessageView | null = null;
+    if (loaded) {
+      let list = loaded;
+      for (const m of p.messages) {
+        if (m.isReply) continue;
+        const isNew = !list.some((x) => x.name === m.name);
+        list = upsertInto(list, m);
+        if (isNew && !m.isOwn) arrivedFromOthers = m;
+      }
+      this.messages[p.space] = list;
+    }
+    if (this.thread && this.thread.space === p.space) {
+      let list = this.thread.messages;
+      for (const m of p.messages) {
+        if (m.thread === this.thread.name) list = upsertInto(list, m);
+      }
+      this.thread.messages = list;
+    }
+    if (arrivedFromOthers && p.space === this.current) {
+      this.announce = `New message from ${arrivedFromOthers.sender.displayName}`;
+      this.maybeMarkRead();
+    }
+  }
+
+  private onDelete(p: DeletePayload) {
+    const drop = new Set(p.names);
+    if (this.messages[p.space]) this.messages[p.space] = this.messages[p.space].filter((m) => !drop.has(m.name));
+    if (this.thread) this.thread.messages = this.thread.messages.filter((m) => !drop.has(m.name));
+    if (this.selected && drop.has(this.selected)) this.selected = null;
+  }
+
+  /** At the bottom of the open space with the window focused: mark it read. */
+  atBottom = $state(true);
+  maybeMarkRead() {
+    const space = this.currentSpace;
+    if (!space || !this.windowFocused || !this.atBottom) return;
+    const list = this.messages[space.name] ?? [];
+    const newest = list[list.length - 1];
+    if (!newest || newest.localState !== "synced") return;
+    if (space.lastReadUs !== null && space.lastReadUs >= newest.createUs) return;
+    void api.markRead(space.name, newest.createUs).catch(() => {});
+  }
+
+  // ------------------------------------------------------------- actions
+
+  async send(text: string, thread: string | null) {
+    const space = thread ? this.thread?.space : this.current;
+    if (!space) return;
+    try {
+      const pending = await api.sendMessage(space, thread, text);
+      this.onUpsert({ space, messages: [pending] });
+    } catch (e) {
+      toast.error(errorText(e));
+      throw e;
+    }
+  }
+
+  async saveEdit(text: string) {
+    const ed = this.editing;
+    if (!ed) return;
+    this.editing = null;
+    try {
+      await api.editMessage(ed.name, text);
+    } catch (e) {
+      toast.error(errorText(e), { description: "Your edit was not saved; the original text is back." });
+    }
+  }
+
+  startEdit(m: MessageView, where: "channel" | "thread") {
+    if (!m.isOwn || m.deleted || m.localState !== "synced") return;
+    this.editing = { name: m.name, text: plainText(m), where };
+    this.zone = where === "thread" ? "threadComposer" : "composer";
+  }
+
+  async editLast(where: "channel" | "thread") {
+    const space = where === "thread" ? this.thread?.space : this.current;
+    if (!space) return;
+    const m = await api.lastOwnMessage(space, where === "thread" ? (this.thread?.name ?? null) : null);
+    if (m) this.startEdit(m, where);
+  }
+
+  async doDelete(m: MessageView) {
+    this.confirmDelete = null;
+    try {
+      await api.deleteMessage(m.name);
+      toast.success("Message deleted");
+    } catch (e) {
+      toast.error(errorText(e));
+    }
+  }
+
+  async react(m: MessageView, emoji: string) {
+    try {
+      await api.toggleReaction(m.name, emoji);
+    } catch (e) {
+      toast.error(errorText(e));
+    }
+  }
+
+  async copyLink(m: MessageView) {
+    if (!m.webUrl) return;
+    try {
+      await navigator.clipboard.writeText(m.webUrl);
+      toast.success("Link copied");
+    } catch {
+      toast.error("Could not copy the link.");
+    }
+  }
+
+  async toggleStar(space: SpaceSummary) {
+    await api.setSpacePrefs(space.name, { starred: !space.starred });
+  }
+
+  async toggleMute(space: SpaceSummary) {
+    await api.setSpacePrefs(space.name, { muted: !space.muted });
+  }
+
+  nextUnread(dir: 1 | -1) {
+    const order = this.sidebarOrder;
+    if (order.length === 0) return;
+    const start = Math.max(0, order.findIndex((s) => s.name === this.current));
+    for (let i = 1; i <= order.length; i++) {
+      const s = order[(start + dir * i + order.length * 2) % order.length];
+      if (s.unread > 0 || s.mentions > 0) {
+        void this.open(s.name);
+        return;
+      }
+    }
+  }
+}
+
+/** The text of a message as typed, for editing. Rebuilt from the rendered blocks. */
+export function plainText(m: MessageView): string {
+  const out: string[] = [];
+  const inl = (xs: Inline[]) =>
+    xs
+      .map((i) => {
+        switch (i.kind) {
+          case "text":
+            return i.bold ? `*${i.text}*` : i.italic ? `_${i.text}_` : i.strike ? `~${i.text}~` : i.text;
+          case "code":
+            return "`" + i.text + "`";
+          case "mention":
+            return `<${i.user}>`;
+          case "link":
+            return i.label === i.url ? i.url : `<${i.url}|${i.label}>`;
+          case "break":
+            return "\n";
+        }
+      })
+      .join("");
+  const walk = (blocks: Block[], prefix = "") => {
+    for (const b of blocks) {
+      switch (b.kind) {
+        case "paragraph":
+        case "heading":
+          out.push(prefix + inl(b.inlines));
+          break;
+        case "code":
+          out.push("```\n" + b.text + "\n```");
+          break;
+        case "quote":
+          walk(b.blocks, "> ");
+          break;
+        case "list":
+          b.items.forEach((item, i) => {
+            const marker = b.ordered ? `${b.start + i}. ` : "- ";
+            const before = out.length;
+            walk(item);
+            if (out.length > before) out[before] = marker + out[before];
+          });
+          break;
+        case "rule":
+          break;
+      }
+    }
+  };
+  walk(m.blocks);
+  return out.join("\n");
+}
+
+export const app = new AppState();

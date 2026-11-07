@@ -8,6 +8,7 @@ pub mod db;
 pub mod error;
 pub mod events;
 pub mod google;
+pub mod media;
 pub mod people;
 pub mod render;
 pub mod sync;
@@ -15,11 +16,14 @@ pub mod ts;
 pub mod views;
 
 pub use error::{Error, Result};
+pub use reqwest;
 
 /// Default data directory, used by the spike. The app uses Tauri's app data dir, which
 /// resolves to the same place for the bundle id `nl.timvancann.kwek`.
 pub fn default_data_dir() -> std::path::PathBuf {
-    let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default();
+    let home = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_default();
     home.join("Library/Application Support/nl.timvancann.kwek")
 }
 

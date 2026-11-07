@@ -54,21 +54,31 @@ pub fn device_subscription(device_id: &str) -> String {
     format!("projects/{GCP_PROJECT}/subscriptions/chat-events-{device_id}")
 }
 
-/// What an event means for local state.
+/// What an event means for local state. Events are short-lived (decoded, applied, dropped),
+/// so the size difference between variants does not matter.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub enum Event {
     MessageUpserted(Message),
-    MessageDeleted { name: String, delete_time: Option<String> },
+    MessageDeleted {
+        name: String,
+        delete_time: Option<String>,
+    },
     ReactionCreated(Reaction),
     ReactionDeleted(Reaction),
     MembershipUpserted(Membership),
     MembershipDeleted(Membership),
     SpaceUpdated(Space),
-    SpaceDeleted { name: String },
+    SpaceDeleted {
+        name: String,
+    },
     SpaceReadState(SpaceReadState),
     ThreadReadState(ThreadReadState),
     /// Subscription lifecycle: `expirationReminder`, `expired`, `suspended`, ...
-    Lifecycle { kind: String, subscription: String },
+    Lifecycle {
+        kind: String,
+        subscription: String,
+    },
     Unknown(String),
 }
 
@@ -107,7 +117,11 @@ pub fn decode_event_data(ce_type: &str, data: &Value) -> Vec<Event> {
     };
 
     let out: Vec<Event> = match (resource, action) {
-        ("message", "created" | "updated") => one("message").and_then(parse).map(Event::MessageUpserted).into_iter().collect(),
+        ("message", "created" | "updated") => one("message")
+            .and_then(parse)
+            .map(Event::MessageUpserted)
+            .into_iter()
+            .collect(),
         ("message", "batchCreated" | "batchUpdated") => many("messages", "message")
             .into_iter()
             .filter_map(parse)
@@ -115,44 +129,76 @@ pub fn decode_event_data(ce_type: &str, data: &Value) -> Vec<Event> {
             .collect(),
         ("message", "deleted") => one("message").and_then(|m| msg_deleted(&m)).into_iter().collect(),
         ("message", "batchDeleted") => many("messages", "message").iter().filter_map(msg_deleted).collect(),
-        ("reaction", "created") => one("reaction").and_then(parse).map(Event::ReactionCreated).into_iter().collect(),
+        ("reaction", "created") => one("reaction")
+            .and_then(parse)
+            .map(Event::ReactionCreated)
+            .into_iter()
+            .collect(),
         ("reaction", "batchCreated") => many("reactions", "reaction")
             .into_iter()
             .filter_map(parse)
             .map(Event::ReactionCreated)
             .collect(),
-        ("reaction", "deleted") => one("reaction").and_then(parse).map(Event::ReactionDeleted).into_iter().collect(),
+        ("reaction", "deleted") => one("reaction")
+            .and_then(parse)
+            .map(Event::ReactionDeleted)
+            .into_iter()
+            .collect(),
         ("reaction", "batchDeleted") => many("reactions", "reaction")
             .into_iter()
             .filter_map(parse)
             .map(Event::ReactionDeleted)
             .collect(),
-        ("membership", "created" | "updated") => one("membership").and_then(parse).map(Event::MembershipUpserted).into_iter().collect(),
+        ("membership", "created" | "updated") => one("membership")
+            .and_then(parse)
+            .map(Event::MembershipUpserted)
+            .into_iter()
+            .collect(),
         ("membership", "batchCreated" | "batchUpdated") => many("memberships", "membership")
             .into_iter()
             .filter_map(parse)
             .map(Event::MembershipUpserted)
             .collect(),
-        ("membership", "deleted") => one("membership").and_then(parse).map(Event::MembershipDeleted).into_iter().collect(),
+        ("membership", "deleted") => one("membership")
+            .and_then(parse)
+            .map(Event::MembershipDeleted)
+            .into_iter()
+            .collect(),
         ("membership", "batchDeleted") => many("memberships", "membership")
             .into_iter()
             .filter_map(parse)
             .map(Event::MembershipDeleted)
             .collect(),
-        ("space", "updated") => one("space").and_then(parse).map(Event::SpaceUpdated).into_iter().collect(),
-        ("space", "batchUpdated") => many("spaces", "space").into_iter().filter_map(parse).map(Event::SpaceUpdated).collect(),
+        ("space", "updated") => one("space")
+            .and_then(parse)
+            .map(Event::SpaceUpdated)
+            .into_iter()
+            .collect(),
+        ("space", "batchUpdated") => many("spaces", "space")
+            .into_iter()
+            .filter_map(parse)
+            .map(Event::SpaceUpdated)
+            .collect(),
         ("space", "deleted") => one("space")
             .and_then(|s| s.get("name").and_then(Value::as_str).map(str::to_owned))
             .map(|name| Event::SpaceDeleted { name })
             .into_iter()
             .collect(),
-        ("spaceReadState", "updated") => one("spaceReadState").and_then(parse).map(Event::SpaceReadState).into_iter().collect(),
+        ("spaceReadState", "updated") => one("spaceReadState")
+            .and_then(parse)
+            .map(Event::SpaceReadState)
+            .into_iter()
+            .collect(),
         ("spaceReadState", "batchUpdated") => many("spaceReadStates", "spaceReadState")
             .into_iter()
             .filter_map(parse)
             .map(Event::SpaceReadState)
             .collect(),
-        ("threadReadState", "updated") => one("threadReadState").and_then(parse).map(Event::ThreadReadState).into_iter().collect(),
+        ("threadReadState", "updated") => one("threadReadState")
+            .and_then(parse)
+            .map(Event::ThreadReadState)
+            .into_iter()
+            .collect(),
         ("threadReadState", "batchUpdated") => many("threadReadStates", "threadReadState")
             .into_iter()
             .filter_map(parse)
@@ -259,7 +305,11 @@ impl EventsClient {
     }
 
     pub async fn delete_pubsub(&self, device_id: &str) -> Result<()> {
-        match self.g.delete(&format!("{PUBSUB}/{}", device_subscription(device_id))).await {
+        match self
+            .g
+            .delete(&format!("{PUBSUB}/{}", device_subscription(device_id)))
+            .await
+        {
             Err(e) if e.is_status("NOT_FOUND") => Ok(()),
             r => r,
         }
@@ -293,10 +343,7 @@ impl EventsClient {
     }
 
     pub async fn list(&self, target: &str, event_types: &[&str]) -> Result<Vec<Subscription>> {
-        let filter = format!(
-            "event_types:\"{}\" AND target_resource=\"{}\"",
-            event_types[0], target
-        );
+        let filter = format!("event_types:\"{}\" AND target_resource=\"{}\"", event_types[0], target);
         #[derive(Deserialize, Default)]
         #[serde(default)]
         struct Resp {
@@ -345,12 +392,11 @@ impl EventsClient {
     }
 
     async fn subscription_from_operation(&self, op: Value, target: &str, types: &[&str]) -> Result<Subscription> {
-        if let Some(resp) = op.get("response") {
-            if let Ok(s) = serde_json::from_value::<Subscription>(resp.clone()) {
-                if !s.name.is_empty() {
-                    return Ok(s);
-                }
-            }
+        if let Some(resp) = op.get("response")
+            && let Ok(s) = serde_json::from_value::<Subscription>(resp.clone())
+            && !s.name.is_empty()
+        {
+            return Ok(s);
         }
         // Long-running operation still running: poll a few times, then fall back to listing.
         if let Some(name) = op.get("name").and_then(Value::as_str) {
@@ -380,12 +426,11 @@ impl EventsClient {
             .g
             .patch(&url, &json!({ "ttl": format!("{SUBSCRIPTION_TTL_SECS}s") }))
             .await?;
-        if let Some(resp) = op.get("response") {
-            if let Ok(s) = serde_json::from_value::<Subscription>(resp.clone()) {
-                if !s.name.is_empty() {
-                    return Ok(s);
-                }
-            }
+        if let Some(resp) = op.get("response")
+            && let Ok(s) = serde_json::from_value::<Subscription>(resp.clone())
+            && !s.name.is_empty()
+        {
+            return Ok(s);
         }
         Ok(Subscription {
             name: name.to_owned(),
@@ -449,7 +494,8 @@ mod tests {
 
     #[test]
     fn decodes_pubsub_envelope() {
-        let data = STANDARD.encode(br#"{"reaction":{"name":"spaces/A/messages/M/reactions/R","emoji":{"unicode":"x"}}}"#);
+        let data =
+            STANDARD.encode(br#"{"reaction":{"name":"spaces/A/messages/M/reactions/R","emoji":{"unicode":"x"}}}"#);
         let r: Received = serde_json::from_value(json!({
             "ackId": "a1",
             "message": {"data": data, "attributes": {"ce-type": "google.workspace.chat.reaction.v1.created"}, "messageId": "1"}

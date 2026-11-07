@@ -31,10 +31,20 @@ fn t(s: &str) -> Micros {
 #[async_trait]
 impl ChatApi for Fake {
     async fn list_spaces(&self, _: Option<&str>) -> Result<Page<Space>> {
-        Ok(Page { items: self.0.lock().unwrap().spaces.clone(), next_page_token: None })
+        Ok(Page {
+            items: self.0.lock().unwrap().spaces.clone(),
+            next_page_token: None,
+        })
     }
     async fn get_space(&self, name: &str) -> Result<Space> {
-        self.0.lock().unwrap().spaces.iter().find(|s| s.name == name).cloned().ok_or(Error::Other("nf".into()))
+        self.0
+            .lock()
+            .unwrap()
+            .spaces
+            .iter()
+            .find(|s| s.name == name)
+            .cloned()
+            .ok_or(Error::Other("nf".into()))
     }
     async fn list_messages(&self, space: &str, o: &ListMessages) -> Result<Page<Message>> {
         let w = self.0.lock().unwrap();
@@ -54,10 +64,20 @@ impl ChatApi for Fake {
         }
         let more = v.len() > o.page_size as usize;
         v.truncate(o.page_size as usize);
-        Ok(Page { items: v, next_page_token: more.then(|| "more".into()) })
+        Ok(Page {
+            items: v,
+            next_page_token: more.then(|| "more".into()),
+        })
     }
     async fn get_message(&self, name: &str) -> Result<Message> {
-        self.0.lock().unwrap().messages.iter().find(|m| m.name == name).cloned().ok_or(Error::Other("nf".into()))
+        self.0
+            .lock()
+            .unwrap()
+            .messages
+            .iter()
+            .find(|m| m.name == name)
+            .cloned()
+            .ok_or(Error::Other("nf".into()))
     }
     async fn create_message(&self, space: &str, text: &str, thread: Option<&str>, client_id: &str) -> Result<Message> {
         let mut w = self.0.lock().unwrap();
@@ -68,11 +88,18 @@ impl ChatApi for Fake {
         let n = w.messages.len();
         let m = Message {
             name: format!("{space}/messages/new{n}"),
-            sender: Some(User { name: ME.into(), ..Default::default() }),
+            sender: Some(User {
+                name: ME.into(),
+                ..Default::default()
+            }),
             create_time: Some("2024-02-01T00:00:00Z".into()),
             text: Some(text.into()),
             formatted_text: Some(text.into()),
-            thread: Some(Thread { name: thread.map(str::to_owned).unwrap_or_else(|| format!("{space}/threads/new{n}")) }),
+            thread: Some(Thread {
+                name: thread
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| format!("{space}/threads/new{n}")),
+            }),
             thread_reply: Some(thread.is_some()),
             client_assigned_message_id: Some(client_id.into()),
             ..Default::default()
@@ -82,7 +109,11 @@ impl ChatApi for Fake {
     }
     async fn update_message_text(&self, name: &str, text: &str) -> Result<Message> {
         let mut w = self.0.lock().unwrap();
-        let m = w.messages.iter_mut().find(|m| m.name == name).ok_or(Error::Other("nf".into()))?;
+        let m = w
+            .messages
+            .iter_mut()
+            .find(|m| m.name == name)
+            .ok_or(Error::Other("nf".into()))?;
         m.text = Some(text.into());
         m.formatted_text = Some(text.into());
         m.last_update_time = Some("2024-03-01T00:00:00Z".into());
@@ -94,9 +125,16 @@ impl ChatApi for Fake {
     async fn create_reaction(&self, message: &str, emoji: &Emoji) -> Result<Reaction> {
         let mut w = self.0.lock().unwrap();
         if let Some(m) = w.messages.iter_mut().find(|m| m.name == message) {
-            m.emoji_reaction_summaries = Some(vec![EmojiReactionSummary { emoji: emoji.clone(), reaction_count: Some(1) }]);
+            m.emoji_reaction_summaries = Some(vec![EmojiReactionSummary {
+                emoji: emoji.clone(),
+                reaction_count: Some(1),
+            }]);
         }
-        Ok(Reaction { name: format!("{message}/reactions/r1"), user: None, emoji: emoji.clone() })
+        Ok(Reaction {
+            name: format!("{message}/reactions/r1"),
+            user: None,
+            emoji: emoji.clone(),
+        })
     }
     async fn delete_reaction(&self, _: &str) -> Result<()> {
         Ok(())
@@ -106,7 +144,10 @@ impl ChatApi for Fake {
     }
     async fn list_members(&self, space: &str, _: Option<&str>) -> Result<Page<Membership>> {
         let w = self.0.lock().unwrap();
-        Ok(Page { items: w.members.iter().filter(|m| m.space_name() == space).cloned().collect(), next_page_token: None })
+        Ok(Page {
+            items: w.members.iter().filter(|m| m.space_name() == space).cloned().collect(),
+            next_page_token: None,
+        })
     }
     async fn get_space_read_state(&self, space: &str) -> Result<SpaceReadState> {
         let w = self.0.lock().unwrap();
@@ -120,7 +161,10 @@ impl ChatApi for Fake {
         self.get_space_read_state(space).await
     }
     async fn get_thread_read_state(&self, thread: &str) -> Result<ThreadReadState> {
-        Ok(ThreadReadState { name: format!("users/me/{thread}/threadReadState"), last_read_time: None })
+        Ok(ThreadReadState {
+            name: format!("users/me/{thread}/threadReadState"),
+            last_read_time: None,
+        })
     }
     async fn list_space_events(&self, space: &str, start: &str, _: Option<&str>) -> Result<Page<SpaceEvent>> {
         let w = self.0.lock().unwrap();
@@ -145,13 +189,23 @@ struct FakePeople;
 #[async_trait]
 impl PeopleApi for FakePeople {
     async fn me(&self) -> Result<Person> {
-        Ok(Person { user: ME.into(), display_name: Some("Me".into()), email: Some("me@x.nl".into()), avatar_url: None })
+        Ok(Person {
+            user: ME.into(),
+            display_name: Some("Me".into()),
+            email: Some("me@x.nl".into()),
+            avatar_url: None,
+        })
     }
     async fn resolve(&self, users: &[String]) -> Result<Vec<Person>> {
         Ok(users
             .iter()
             .filter(|u| u.as_str() == "users/ada")
-            .map(|u| Person { user: u.clone(), display_name: Some("Ada Lovelace".into()), email: None, avatar_url: None })
+            .map(|u| Person {
+                user: u.clone(),
+                display_name: Some("Ada Lovelace".into()),
+                email: None,
+                avatar_url: None,
+            })
             .collect())
     }
 }
@@ -180,7 +234,11 @@ impl Sink for Rec {
 }
 
 fn user(name: &str, display: Option<&str>) -> User {
-    User { name: name.into(), display_name: display.map(str::to_owned), ..Default::default() }
+    User {
+        name: name.into(),
+        display_name: display.map(str::to_owned),
+        ..Default::default()
+    }
 }
 
 fn message(space: &str, id: &str, sender: &str, at: &str, text: &str, thread: &str, reply: bool) -> Message {
@@ -190,7 +248,9 @@ fn message(space: &str, id: &str, sender: &str, at: &str, text: &str, thread: &s
         create_time: Some(at.into()),
         text: Some(text.into()),
         formatted_text: Some(text.into()),
-        thread: Some(Thread { name: format!("{space}/threads/{thread}") }),
+        thread: Some(Thread {
+            name: format!("{space}/threads/{thread}"),
+        }),
         thread_reply: Some(reply),
         space: Some(SpaceRef { name: space.into() }),
         ..Default::default()
@@ -218,14 +278,46 @@ fn world() -> Fake {
             },
         ];
         w.messages = vec![
-            message("spaces/team", "1", "users/ada", "2024-01-01T10:00:00Z", "hello **team**", "t1", false),
+            message(
+                "spaces/team",
+                "1",
+                "users/ada",
+                "2024-01-01T10:00:00Z",
+                "hello **team**",
+                "t1",
+                false,
+            ),
             message("spaces/team", "2", ME, "2024-01-01T10:30:00Z", "reply one", "t1", true),
-            message("spaces/team", "3", "users/ada", "2024-01-01T12:00:00Z", "deploy is green", "t3", false),
-            message("spaces/dm", "4", "users/ada", "2024-01-01T11:00:00Z", "psst", "t4", false),
+            message(
+                "spaces/team",
+                "3",
+                "users/ada",
+                "2024-01-01T12:00:00Z",
+                "deploy is green",
+                "t3",
+                false,
+            ),
+            message(
+                "spaces/dm",
+                "4",
+                "users/ada",
+                "2024-01-01T11:00:00Z",
+                "psst",
+                "t4",
+                false,
+            ),
         ];
         w.members = vec![
-            Membership { name: "spaces/dm/members/me".into(), member: Some(user(ME, None)), ..Default::default() },
-            Membership { name: "spaces/dm/members/ada".into(), member: Some(user("users/ada", None)), ..Default::default() },
+            Membership {
+                name: "spaces/dm/members/me".into(),
+                member: Some(user(ME, None)),
+                ..Default::default()
+            },
+            Membership {
+                name: "spaces/dm/members/ada".into(),
+                member: Some(user("users/ada", None)),
+                ..Default::default()
+            },
         ];
         w.read.insert("spaces/team".into(), "2024-01-01T10:15:00Z".into());
         w.read.insert("spaces/dm".into(), "2024-01-01T09:00:00Z".into());
@@ -235,7 +327,15 @@ fn world() -> Fake {
 
 async fn engine(f: &Fake) -> (Arc<Engine>, Arc<Rec>) {
     let rec = Arc::new(Rec::default());
-    let e = Engine::new(Db::open_in_memory().unwrap(), Arc::new(f.clone()), Arc::new(FakePeople), None, None, rec.clone(), None);
+    let e = Engine::new(
+        Db::open_in_memory().unwrap(),
+        Arc::new(f.clone()),
+        Arc::new(FakePeople),
+        None,
+        None,
+        rec.clone(),
+        None,
+    );
     e.ensure_identity().await.unwrap();
     (e, rec)
 }
@@ -280,14 +380,23 @@ async fn reconcile_replays_missed_events_without_duplicates() {
         edited.text = Some("hello edited".into());
         edited.formatted_text = Some("hello edited".into());
         edited.last_update_time = Some("2030-01-01T00:00:00Z".into());
-        let new = message("spaces/team", "5", "users/ada", "2030-01-01T00:01:00Z", "after sleep", "t5", false);
+        let new = message(
+            "spaces/team",
+            "5",
+            "users/ada",
+            "2030-01-01T00:01:00Z",
+            "after sleep",
+            "t5",
+            false,
+        );
         let now = ts::format(ts::now() + MINUTE);
         w.events = vec![
             SpaceEvent {
                 name: "spaces/team/spaceEvents/1".into(),
                 event_time: Some(now.clone()),
                 event_type: "google.workspace.chat.message.v1.updated".into(),
-                data: serde_json::from_value(serde_json::json!({"messageUpdatedEventData": {"message": edited}})).unwrap(),
+                data: serde_json::from_value(serde_json::json!({"messageUpdatedEventData": {"message": edited}}))
+                    .unwrap(),
             },
             SpaceEvent {
                 name: "spaces/team/spaceEvents/2".into(),
@@ -329,7 +438,10 @@ async fn send_is_optimistic_then_replaced_by_server_row() {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     let msgs = e.get_messages("spaces/team", None, 50).unwrap();
-    let mine: Vec<_> = msgs.iter().filter(|m| render::plain(&m.blocks) == "shipping it").collect();
+    let mine: Vec<_> = msgs
+        .iter()
+        .filter(|m| render::plain(&m.blocks) == "shipping it")
+        .collect();
     assert_eq!(mine.len(), 1);
     assert_eq!(mine[0].local_state, "synced");
     assert!(!mine[0].name.starts_with("pending:"));
@@ -359,7 +471,10 @@ async fn failed_send_stays_visible_and_retries() {
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    assert!(e.message_view(&v.name).unwrap().is_none(), "pending row renamed to the server name");
+    assert!(
+        e.message_view(&v.name).unwrap().is_none(),
+        "pending row renamed to the server name"
+    );
     assert_eq!(f.0.lock().unwrap().created.len(), 1);
 }
 
@@ -381,7 +496,12 @@ async fn mark_read_clears_unread_locally() {
     let (e, _) = engine(&f).await;
     e.bootstrap().await.unwrap();
     e.mark_read("spaces/team", t("2024-01-01T12:00:00Z")).await.unwrap();
-    let team = e.list_spaces().unwrap().into_iter().find(|s| s.name == "spaces/team").unwrap();
+    let team = e
+        .list_spaces()
+        .unwrap()
+        .into_iter()
+        .find(|s| s.name == "spaces/team")
+        .unwrap();
     assert_eq!(team.unread, 0);
 }
 
@@ -410,12 +530,23 @@ async fn load_older_pages_back_and_marks_complete() {
         let mut w = f.0.lock().unwrap();
         for i in 0..250 {
             let at = ts::format(t("2023-01-01T00:00:00Z") + i as i64 * MINUTE);
-            w.messages.push(message("spaces/team", &format!("old{i}"), "users/ada", &at, "old", &format!("o{i}"), false));
+            w.messages.push(message(
+                "spaces/team",
+                &format!("old{i}"),
+                "users/ada",
+                &at,
+                "old",
+                &format!("o{i}"),
+                false,
+            ));
         }
     }
     let (e, _) = engine(&f).await;
     e.bootstrap().await.unwrap();
-    assert_eq!(e.get_messages("spaces/team", None, 500).unwrap().len(), INITIAL_PAGE as usize - 1);
+    assert_eq!(
+        e.get_messages("spaces/team", None, 500).unwrap().len(),
+        INITIAL_PAGE as usize - 1
+    );
     let mut total = 0;
     loop {
         let n = e.load_older("spaces/team").await.unwrap();
@@ -425,7 +556,14 @@ async fn load_older_pages_back_and_marks_complete() {
         total += n;
     }
     assert_eq!(total, 253 - INITIAL_PAGE);
-    assert!(e.list_spaces().unwrap().iter().find(|s| s.name == "spaces/team").unwrap().history_complete);
+    assert!(
+        e.list_spaces()
+            .unwrap()
+            .iter()
+            .find(|s| s.name == "spaces/team")
+            .unwrap()
+            .history_complete
+    );
 }
 
 #[test]

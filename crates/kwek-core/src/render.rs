@@ -14,11 +14,24 @@ use ts_rs::TS;
 #[serde(tag = "kind", rename_all = "camelCase")]
 #[ts(export)]
 pub enum Block {
-    Paragraph { inlines: Vec<Inline> },
-    Heading { level: u8, inlines: Vec<Inline> },
-    List { ordered: bool, start: u32, items: Vec<Vec<Block>> },
-    Quote { blocks: Vec<Block> },
-    Code { text: String },
+    Paragraph {
+        inlines: Vec<Inline>,
+    },
+    Heading {
+        level: u8,
+        inlines: Vec<Inline>,
+    },
+    List {
+        ordered: bool,
+        start: u32,
+        items: Vec<Vec<Block>>,
+    },
+    Quote {
+        blocks: Vec<Block>,
+    },
+    Code {
+        text: String,
+    },
     Rule,
 }
 
@@ -26,9 +39,20 @@ pub enum Block {
 #[serde(tag = "kind", rename_all = "camelCase")]
 #[ts(export)]
 pub enum Inline {
-    Text { text: String, bold: bool, italic: bool, strike: bool },
-    Code { text: String },
-    Mention { user: String, label: String, me: bool },
+    Text {
+        text: String,
+        bold: bool,
+        italic: bool,
+        strike: bool,
+    },
+    Code {
+        text: String,
+    },
+    Mention {
+        user: String,
+        label: String,
+        me: bool,
+    },
     Link {
         url: String,
         label: String,
@@ -49,11 +73,18 @@ enum Frame {
     Blocks(Vec<Block>),
     Paragraph(Vec<Inline>),
     Heading(u8, Vec<Inline>),
-    List { ordered: bool, start: u32, items: Vec<Vec<Block>> },
+    List {
+        ordered: bool,
+        start: u32,
+        items: Vec<Vec<Block>>,
+    },
     Item(Vec<Block>),
     Quote(Vec<Block>),
     Code(String),
-    Link { url: String, label: String },
+    Link {
+        url: String,
+        label: String,
+    },
 }
 
 #[derive(Default, Clone, Copy)]
@@ -130,7 +161,10 @@ pub fn parse(markdown: &str, ctx: &Ctx) -> Vec<Block> {
                     _ => None,
                 }),
                 TagEnd::Heading(_) => pop_block(&mut stack, |f| match f {
-                    Frame::Heading(l, i) => Some(Block::Heading { level: l, inlines: merge(i) }),
+                    Frame::Heading(l, i) => Some(Block::Heading {
+                        level: l,
+                        inlines: merge(i),
+                    }),
                     _ => None,
                 }),
                 TagEnd::BlockQuote(_) => {
@@ -155,10 +189,10 @@ pub fn parse(markdown: &str, ctx: &Ctx) -> Vec<Block> {
                 }),
                 TagEnd::Item => {
                     close_implicit(&mut stack);
-                    if let Some(Frame::Item(blocks)) = stack.pop() {
-                        if let Some(Frame::List { items, .. }) = stack.last_mut() {
-                            items.push(blocks);
-                        }
+                    if let Some(Frame::Item(blocks)) = stack.pop()
+                        && let Some(Frame::List { items, .. }) = stack.last_mut()
+                    {
+                        items.push(blocks);
                     }
                 }
                 TagEnd::Emphasis => style.italic = style.italic.saturating_sub(1),
@@ -245,9 +279,8 @@ fn ensure_inline(stack: &mut Vec<Frame>) {
 
 fn push_inline(stack: &mut Vec<Frame>, i: Inline) {
     ensure_inline(stack);
-    match stack.last_mut() {
-        Some(Frame::Paragraph(v) | Frame::Heading(_, v)) => v.push(i),
-        _ => {}
+    if let Some(Frame::Paragraph(v) | Frame::Heading(_, v)) = stack.last_mut() {
+        v.push(i)
     }
 }
 
@@ -255,21 +288,22 @@ fn push_inline(stack: &mut Vec<Frame>, i: Inline) {
 fn close_implicit(stack: &mut Vec<Frame>) {
     if stack.len() >= 2
         && matches!(stack.last(), Some(Frame::Paragraph(_)))
-        && matches!(stack[stack.len() - 2], Frame::Item(_) | Frame::Quote(_) | Frame::Blocks(_))
+        && matches!(
+            stack[stack.len() - 2],
+            Frame::Item(_) | Frame::Quote(_) | Frame::Blocks(_)
+        )
+        && let Some(Frame::Paragraph(i)) = stack.pop()
     {
-        if let Some(Frame::Paragraph(i)) = stack.pop() {
-            let i = merge(i);
-            if !i.is_empty() {
-                push_block(stack, Block::Paragraph { inlines: i });
-            }
+        let i = merge(i);
+        if !i.is_empty() {
+            push_block(stack, Block::Paragraph { inlines: i });
         }
     }
 }
 
 fn push_block(stack: &mut [Frame], b: Block) {
-    match stack.last_mut() {
-        Some(Frame::Blocks(v) | Frame::Item(v) | Frame::Quote(v)) => v.push(b),
-        _ => {}
+    if let Some(Frame::Blocks(v) | Frame::Item(v) | Frame::Quote(v)) = stack.last_mut() {
+        v.push(b)
     }
 }
 
@@ -289,29 +323,29 @@ fn split_text(t: &str, style: Style, ctx: &Ctx) -> Vec<Inline> {
     let mut buf = String::new();
     let mut i = 0;
     while i < s.len() {
-        if s[i] == '<' && starts_with(&s, i + 1, "users/") {
-            if let Some(end) = (i + 7..s.len()).find(|&j| s[j] == '>') {
-                let id: String = s[i + 7..end].iter().collect();
-                if !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric()) {
-                    flush(&mut out, &mut buf, style);
-                    let user = format!("users/{id}");
-                    let label = if id == "all" {
-                        "all".to_owned()
-                    } else {
-                        (ctx.name_of)(&user).unwrap_or_else(|| "Unknown user".to_owned())
-                    };
-                    out.push(Inline::Mention {
-                        me: user == ctx.me || id == "all",
-                        user,
-                        label,
-                    });
-                    i = end + 1;
-                    continue;
-                }
+        if s[i] == '<'
+            && starts_with(&s, i + 1, "users/")
+            && let Some(end) = (i + 7..s.len()).find(|&j| s[j] == '>')
+        {
+            let id: String = s[i + 7..end].iter().collect();
+            if !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric()) {
+                flush(&mut out, &mut buf, style);
+                let user = format!("users/{id}");
+                let label = if id == "all" {
+                    "all".to_owned()
+                } else {
+                    (ctx.name_of)(&user).unwrap_or_else(|| "Unknown user".to_owned())
+                };
+                out.push(Inline::Mention {
+                    me: user == ctx.me || id == "all",
+                    user,
+                    label,
+                });
+                i = end + 1;
+                continue;
             }
         }
-        if (starts_with(&s, i, "https://") || starts_with(&s, i, "http://"))
-            && (i == 0 || !s[i - 1].is_alphanumeric())
+        if (starts_with(&s, i, "https://") || starts_with(&s, i, "http://")) && (i == 0 || !s[i - 1].is_alphanumeric())
         {
             let mut end = i;
             while end < s.len() && !s[end].is_whitespace() && s[end] != '<' && s[end] != '>' {
@@ -352,14 +386,7 @@ fn flush(out: &mut Vec<Inline>, buf: &mut String, style: Style) {
 }
 
 fn starts_with(s: &[char], i: usize, pat: &str) -> bool {
-    let mut j = i;
-    for c in pat.chars() {
-        if s.get(j) != Some(&c) {
-            return false;
-        }
-        j += 1;
-    }
-    true
+    pat.chars().enumerate().all(|(k, c)| s.get(i + k) == Some(&c))
 }
 
 pub fn rich_kind(url: &str) -> Option<String> {
@@ -376,14 +403,23 @@ fn merge(v: Vec<Inline>) -> Vec<Inline> {
     let mut out: Vec<Inline> = Vec::with_capacity(v.len());
     for i in v {
         if let (
-            Some(Inline::Text { text: a, bold: b1, italic: i1, strike: s1 }),
-            Inline::Text { text: b, bold: b2, italic: i2, strike: s2 },
+            Some(Inline::Text {
+                text: a,
+                bold: b1,
+                italic: i1,
+                strike: s1,
+            }),
+            Inline::Text {
+                text: b,
+                bold: b2,
+                italic: i2,
+                strike: s2,
+            },
         ) = (out.last_mut(), &i)
+            && (*b1, *i1, *s1) == (*b2, *i2, *s2)
         {
-            if (*b1, *i1, *s1) == (*b2, *i2, *s2) {
-                a.push_str(b);
-                continue;
-            }
+            a.push_str(b);
+            continue;
         }
         out.push(i);
     }
@@ -449,23 +485,48 @@ mod tests {
     }
 
     fn p(s: &str) -> Vec<Block> {
-        parse(s, &Ctx { me: "users/2", name_of: &names })
+        parse(
+            s,
+            &Ctx {
+                me: "users/2",
+                name_of: &names,
+            },
+        )
     }
 
     fn t(s: &str) -> Inline {
-        Inline::Text { text: s.into(), bold: false, italic: false, strike: false }
+        Inline::Text {
+            text: s.into(),
+            bold: false,
+            italic: false,
+            strike: false,
+        }
     }
     fn b(s: &str) -> Inline {
-        Inline::Text { text: s.into(), bold: true, italic: false, strike: false }
+        Inline::Text {
+            text: s.into(),
+            bold: true,
+            italic: false,
+            strike: false,
+        }
     }
     fn i(s: &str) -> Inline {
-        Inline::Text { text: s.into(), bold: false, italic: true, strike: false }
+        Inline::Text {
+            text: s.into(),
+            bold: false,
+            italic: true,
+            strike: false,
+        }
     }
     fn para(v: Vec<Inline>) -> Block {
         Block::Paragraph { inlines: v }
     }
     fn link(url: &str, label: &str) -> Inline {
-        Inline::Link { url: url.into(), label: label.into(), rich: rich_kind(url) }
+        Inline::Link {
+            url: url.into(),
+            label: label.into(),
+            rich: rich_kind(url),
+        }
     }
 
     #[test]
@@ -475,59 +536,147 @@ mod tests {
             ("", vec![]),
             // Escapes from Chat's Markdown export.
             ("staat live\\!\n", vec![para(vec![t("staat live!")])]),
-            ("**bold** and *it* and ~~gone~~", vec![para(vec![
-                b("bold"),
-                t(" and "),
-                i("it"),
-                t(" and "),
-                Inline::Text { text: "gone".into(), bold: false, italic: false, strike: true },
-            ])]),
+            (
+                "**bold** and *it* and ~~gone~~",
+                vec![para(vec![
+                    b("bold"),
+                    t(" and "),
+                    i("it"),
+                    t(" and "),
+                    Inline::Text {
+                        text: "gone".into(),
+                        bold: false,
+                        italic: false,
+                        strike: true,
+                    },
+                ])],
+            ),
             // Hard-wrapped lines are one paragraph; a blank line splits.
-            ("one line that\nwraps\n\nsecond", vec![para(vec![t("one line that wraps")]), para(vec![t("second")])]),
+            (
+                "one line that\nwraps\n\nsecond",
+                vec![para(vec![t("one line that wraps")]), para(vec![t("second")])],
+            ),
             // Chat's loose, indented lists.
-            ("**Title**\n\n  - first item\n    wrapped\n\n  - second\n", vec![
-                para(vec![b("Title")]),
-                Block::List {
+            (
+                "**Title**\n\n  - first item\n    wrapped\n\n  - second\n",
+                vec![
+                    para(vec![b("Title")]),
+                    Block::List {
+                        ordered: false,
+                        start: 1,
+                        items: vec![vec![para(vec![t("first item wrapped")])], vec![para(vec![t("second")])]],
+                    },
+                ],
+            ),
+            // Tight list: implicit paragraphs.
+            (
+                "- a\n- b",
+                vec![Block::List {
                     ordered: false,
                     start: 1,
-                    items: vec![vec![para(vec![t("first item wrapped")])], vec![para(vec![t("second")])]],
-                },
-            ]),
-            // Tight list: implicit paragraphs.
-            ("- a\n- b", vec![Block::List {
-                ordered: false,
-                start: 1,
-                items: vec![vec![para(vec![t("a")])], vec![para(vec![t("b")])]],
-            }]),
-            ("3. x\n4. y", vec![Block::List {
-                ordered: true,
-                start: 3,
-                items: vec![vec![para(vec![t("x")])], vec![para(vec![t("y")])]],
-            }]),
-            ("use `cargo *test*` now", vec![para(vec![t("use "), Inline::Code { text: "cargo *test*".into() }, t(" now")])]),
-            ("```\nfn main() {}\n```", vec![Block::Code { text: "fn main() {}".into() }]),
-            ("> quoted\n\nafter", vec![Block::Quote { blocks: vec![para(vec![t("quoted")])] }, para(vec![t("after")])]),
-            ("# Head", vec![Block::Heading { level: 1, inlines: vec![t("Head")] }]),
+                    items: vec![vec![para(vec![t("a")])], vec![para(vec![t("b")])]],
+                }],
+            ),
+            (
+                "3. x\n4. y",
+                vec![Block::List {
+                    ordered: true,
+                    start: 3,
+                    items: vec![vec![para(vec![t("x")])], vec![para(vec![t("y")])]],
+                }],
+            ),
+            (
+                "use `cargo *test*` now",
+                vec![para(vec![
+                    t("use "),
+                    Inline::Code {
+                        text: "cargo *test*".into(),
+                    },
+                    t(" now"),
+                ])],
+            ),
+            (
+                "```\nfn main() {}\n```",
+                vec![Block::Code {
+                    text: "fn main() {}".into(),
+                }],
+            ),
+            (
+                "> quoted\n\nafter",
+                vec![
+                    Block::Quote {
+                        blocks: vec![para(vec![t("quoted")])],
+                    },
+                    para(vec![t("after")]),
+                ],
+            ),
+            (
+                "# Head",
+                vec![Block::Heading {
+                    level: 1,
+                    inlines: vec![t("Head")],
+                }],
+            ),
             // Links.
-            ("see [the site](https://x.nl)", vec![para(vec![t("see "), link("https://x.nl", "the site")])]),
-            ("go https://example.com/a, now", vec![para(vec![t("go "), link("https://example.com/a", "https://example.com/a"), t(", now")])]),
-            ("<https://meet.google.com/abc>", vec![para(vec![link("https://meet.google.com/abc", "https://meet.google.com/abc")])]),
-            ("(https://en.wikipedia.org/wiki/Rust_(language))", vec![para(vec![
-                t("("),
-                link("https://en.wikipedia.org/wiki/Rust_(language)", "https://en.wikipedia.org/wiki/Rust_(language)"),
-                t(")"),
-            ])]),
+            (
+                "see [the site](https://x.nl)",
+                vec![para(vec![t("see "), link("https://x.nl", "the site")])],
+            ),
+            (
+                "go https://example.com/a, now",
+                vec![para(vec![
+                    t("go "),
+                    link("https://example.com/a", "https://example.com/a"),
+                    t(", now"),
+                ])],
+            ),
+            (
+                "<https://meet.google.com/abc>",
+                vec![para(vec![link(
+                    "https://meet.google.com/abc",
+                    "https://meet.google.com/abc",
+                )])],
+            ),
+            (
+                "(https://en.wikipedia.org/wiki/Rust_(language))",
+                vec![para(vec![
+                    t("("),
+                    link(
+                        "https://en.wikipedia.org/wiki/Rust_(language)",
+                        "https://en.wikipedia.org/wiki/Rust_(language)",
+                    ),
+                    t(")"),
+                ])],
+            ),
             // Mentions.
-            ("hi <users/1>!", vec![para(vec![
-                t("hi "),
-                Inline::Mention { user: "users/1".into(), label: "Ada".into(), me: false },
-                t("!"),
-            ])]),
-            ("<users/2> and <users/all>", vec![para(vec![
-                Inline::Mention { user: "users/2".into(), label: "Tim".into(), me: true },
-                t(" and "),
-                Inline::Mention { user: "users/all".into(), label: "all".into(), me: true },
-            ])]),
+            (
+                "hi <users/1>!",
+                vec![para(vec![
+                    t("hi "),
+                    Inline::Mention {
+                        user: "users/1".into(),
+                        label: "Ada".into(),
+                        me: false,
+                    },
+                    t("!"),
+                ])],
+            ),
+            (
+                "<users/2> and <users/all>",
+                vec![para(vec![
+                    Inline::Mention {
+                        user: "users/2".into(),
+                        label: "Tim".into(),
+                        me: true,
+                    },
+                    t(" and "),
+                    Inline::Mention {
+                        user: "users/all".into(),
+                        label: "all".into(),
+                        me: true,
+                    },
+                ])],
+            ),
             // HTML is never interpreted: it stays text.
             ("<b>x</b>", vec![para(vec![t("<b>x</b>")])]),
             ("2 * 3 * 4", vec![para(vec![t("2 * 3 * 4")])]),
@@ -551,12 +700,17 @@ mod tests {
 
     #[test]
     fn plain_preview() {
-        assert_eq!(plain(&p("hi <users/1>, **see** [this](https://x.nl)")), "hi @Ada, see this");
+        assert_eq!(
+            plain(&p("hi <users/1>, **see** [this](https://x.nl)")),
+            "hi @Ada, see this"
+        );
     }
 
     #[test]
     fn never_panics_on_odd_input() {
-        for s in ["`", "```", "<", "<users/>", "**_~", "- ", "> ", "[](", "\u{FFFC}", "1.", "* * *", "[a](b", "<users/1"] {
+        for s in [
+            "`", "```", "<", "<users/>", "**_~", "- ", "> ", "[](", "\u{FFFC}", "1.", "* * *", "[a](b", "<users/1",
+        ] {
             let _ = p(s);
         }
     }

@@ -2,6 +2,7 @@
 
 export type SyncStatus = { 
 /**
- * `starting`, `bootstrapping`, `live`, `reconciling`, `offline`, `authRequired`, `error`.
+ * `starting`, `bootstrapping`, `live`, `polling`, `reconciling`, `offline`,
+ * `authRequired`, `error`.
  */
 state: string, detail: string | null, };

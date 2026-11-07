@@ -59,11 +59,12 @@ pub fn apply(c: &Connection, events: &[Event], me: &str) -> Result<Applied> {
         let joins_me = matches!(ev, Event::MembershipUpserted(mb)
             if mb.member.as_ref().is_some_and(|u| u.name == me)
                 && matches!(mb.state.as_deref(), None | Some("JOINED")));
-        if let Some(s) = &space {
-            if !joins_me && !known(s)? {
-                tracing::debug!(space = %s, "dropping event for a space that is not ours");
-                continue;
-            }
+        if let Some(s) = &space
+            && !joins_me
+            && !known(s)?
+        {
+            tracing::debug!(space = %s, "dropping event for a space that is not ours");
+            continue;
         }
         match ev {
             Event::MessageUpserted(m) => {
@@ -203,20 +204,29 @@ mod tests {
             last_update_time: updated.map(str::to_owned),
             text: Some(text.into()),
             formatted_text: Some(text.into()),
-            thread: Some(Thread { name: format!("spaces/S/threads/{id}") }),
-            space: Some(SpaceRef { name: "spaces/S".into() }),
+            thread: Some(Thread {
+                name: format!("spaces/S/threads/{id}"),
+            }),
+            space: Some(SpaceRef {
+                name: "spaces/S".into(),
+            }),
             ..Default::default()
         }
     }
 
     /// Everything observable about messages, excluding the rowid.
-    fn snapshot(db: &Db) -> Vec<(String, i64, Option<i64>, Option<String>, String, bool)> {
+    /// (name, update_us, delete_us, text, local_state, mentions_me)
+    type Row = (String, i64, Option<i64>, Option<String>, String, bool);
+
+    fn snapshot(db: &Db) -> Vec<Row> {
         db.with(|c| {
             let mut st = c.prepare(
                 "SELECT name, update_us, delete_us, text, local_state, mentions_me FROM message ORDER BY name",
             )?;
             let rows = st
-                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))?
+                .query_map([], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))
+                })?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             Ok(rows)
         })
@@ -224,14 +234,26 @@ mod tests {
     }
 
     fn fts_hits(db: &Db, q: &str) -> i64 {
-        db.with(|c| Ok(c.query_row("SELECT count(*) FROM message_fts WHERE message_fts MATCH ?1", [q], |r| r.get(0))?))
-            .unwrap()
+        db.with(|c| {
+            Ok(c.query_row(
+                "SELECT count(*) FROM message_fts WHERE message_fts MATCH ?1",
+                [q],
+                |r| r.get(0),
+            )?)
+        })
+        .unwrap()
     }
 
     fn db_with_space() -> Db {
         let db = Db::open_in_memory().unwrap();
         db.with(|c| {
-            write::upsert_space(c, &crate::chat::Space { name: "spaces/S".into(), ..Default::default() })
+            write::upsert_space(
+                c,
+                &crate::chat::Space {
+                    name: "spaces/S".into(),
+                    ..Default::default()
+                },
+            )
         })
         .unwrap();
         db
@@ -253,13 +275,34 @@ mod tests {
     fn universe() -> Vec<Event> {
         vec![
             Event::MessageUpserted(msg(1, "first", "2024-01-01T10:00:00Z", None)),
-            Event::MessageUpserted(msg(1, "first edited", "2024-01-01T10:00:00Z", Some("2024-01-01T10:05:00Z"))),
-            Event::MessageUpserted(msg(1, "first edited again", "2024-01-01T10:00:00Z", Some("2024-01-01T10:06:00.5Z"))),
+            Event::MessageUpserted(msg(
+                1,
+                "first edited",
+                "2024-01-01T10:00:00Z",
+                Some("2024-01-01T10:05:00Z"),
+            )),
+            Event::MessageUpserted(msg(
+                1,
+                "first edited again",
+                "2024-01-01T10:00:00Z",
+                Some("2024-01-01T10:06:00.5Z"),
+            )),
             Event::MessageUpserted(msg(2, "second", "2024-01-01T11:00:00Z", None)),
-            Event::MessageDeleted { name: "spaces/S/messages/2".into(), delete_time: Some("2024-01-01T11:30:00Z".into()) },
-            Event::MessageUpserted(msg(2, "second edited", "2024-01-01T11:00:00Z", Some("2024-01-01T11:10:00Z"))),
+            Event::MessageDeleted {
+                name: "spaces/S/messages/2".into(),
+                delete_time: Some("2024-01-01T11:30:00Z".into()),
+            },
+            Event::MessageUpserted(msg(
+                2,
+                "second edited",
+                "2024-01-01T11:00:00Z",
+                Some("2024-01-01T11:10:00Z"),
+            )),
             Event::MessageUpserted(msg(3, "third", "2024-01-01T12:00:00Z", None)),
-            Event::MessageDeleted { name: "spaces/S/messages/4".into(), delete_time: Some("2024-01-01T13:00:00Z".into()) },
+            Event::MessageDeleted {
+                name: "spaces/S/messages/4".into(),
+                delete_time: Some("2024-01-01T13:00:00Z".into()),
+            },
             Event::MessageUpserted(msg(4, "fourth", "2024-01-01T12:30:00Z", None)),
         ]
     }
@@ -290,7 +333,12 @@ mod tests {
     fn delete_is_final_and_newest_edit_wins() {
         let db = run(&universe());
         let snap = snapshot(&db);
-        let get = |n: u32| snap.iter().find(|r| r.0 == format!("spaces/S/messages/{n}")).unwrap().clone();
+        let get = |n: u32| {
+            snap.iter()
+                .find(|r| r.0 == format!("spaces/S/messages/{n}"))
+                .unwrap()
+                .clone()
+        };
         assert_eq!(get(1).3.as_deref(), Some("first edited again"));
         assert!(get(2).2.is_some() && get(2).3.is_none());
         assert_eq!(get(4).4, "synced");
@@ -307,16 +355,25 @@ mod tests {
             })
             .unwrap();
             let mut server = msg(9, "hello", "2024-01-01T10:00:00Z", None);
-            server.sender = Some(User { name: ME.into(), ..Default::default() });
+            server.sender = Some(User {
+                name: ME.into(),
+                ..Default::default()
+            });
             server.client_assigned_message_id = Some("client-1".into());
             let evs = vec![Event::MessageUpserted(server)];
             db.with(|c| {
                 if echo_first {
                     // The echo lands as its own row first (e.g. pending row was renamed by
                     // another path), then the pending row must be dropped, not duplicated.
-                    c.execute("UPDATE message SET client_id = NULL WHERE name = 'pending:client-1'", [])?;
+                    c.execute(
+                        "UPDATE message SET client_id = NULL WHERE name = 'pending:client-1'",
+                        [],
+                    )?;
                     apply(c, &evs, ME)?;
-                    c.execute("UPDATE message SET client_id = 'client-1' WHERE name = 'pending:client-1'", [])?;
+                    c.execute(
+                        "UPDATE message SET client_id = 'client-1' WHERE name = 'pending:client-1'",
+                        [],
+                    )?;
                 }
                 apply(c, &evs, ME)?;
                 Ok(())
@@ -333,13 +390,26 @@ mod tests {
     #[test]
     fn upsert_keeps_rowid_so_fts_stays_consistent() {
         let db = run(&[Event::MessageUpserted(msg(1, "alpha", "2024-01-01T10:00:00Z", None))]);
-        let id1: i64 = db.with(|c| Ok(c.query_row("SELECT id FROM message", [], |r| r.get(0))?)).unwrap();
+        let id1: i64 = db
+            .with(|c| Ok(c.query_row("SELECT id FROM message", [], |r| r.get(0))?))
+            .unwrap();
         db.with(|c| {
-            apply(c, &[Event::MessageUpserted(msg(1, "beta", "2024-01-01T10:00:00Z", Some("2024-01-01T10:01:00Z")))], ME)?;
+            apply(
+                c,
+                &[Event::MessageUpserted(msg(
+                    1,
+                    "beta",
+                    "2024-01-01T10:00:00Z",
+                    Some("2024-01-01T10:01:00Z"),
+                ))],
+                ME,
+            )?;
             Ok(())
         })
         .unwrap();
-        let id2: i64 = db.with(|c| Ok(c.query_row("SELECT id FROM message", [], |r| r.get(0))?)).unwrap();
+        let id2: i64 = db
+            .with(|c| Ok(c.query_row("SELECT id FROM message", [], |r| r.get(0))?))
+            .unwrap();
         assert_eq!(id1, id2);
         assert_eq!(fts_hits(&db, "alpha"), 0);
         assert_eq!(fts_hits(&db, "beta"), 1);
@@ -349,17 +419,25 @@ mod tests {
     fn events_for_foreign_spaces_are_dropped_except_my_join() {
         let mut foreign = msg(1, "not yours", "2024-01-01T10:00:00Z", None);
         foreign.name = "spaces/OTHER/messages/1".into();
-        foreign.space = Some(SpaceRef { name: "spaces/OTHER".into() });
+        foreign.space = Some(SpaceRef {
+            name: "spaces/OTHER".into(),
+        });
         let join = Event::MembershipUpserted(crate::chat::Membership {
             name: "spaces/NEW/members/me".into(),
             state: Some("JOINED".into()),
-            member: Some(User { name: ME.into(), ..Default::default() }),
+            member: Some(User {
+                name: ME.into(),
+                ..Default::default()
+            }),
             ..Default::default()
         });
         let someone_else = Event::MembershipUpserted(crate::chat::Membership {
             name: "spaces/OTHER/members/x".into(),
             state: Some("JOINED".into()),
-            member: Some(User { name: "users/x".into(), ..Default::default() }),
+            member: Some(User {
+                name: "users/x".into(),
+                ..Default::default()
+            }),
             ..Default::default()
         });
         let db = db_with_space();
@@ -367,9 +445,18 @@ mod tests {
             .with(|c| apply(c, &[Event::MessageUpserted(foreign), join, someone_else], ME))
             .unwrap();
         assert!(snapshot(&db).is_empty());
-        assert_eq!(a.joined_spaces.into_iter().collect::<Vec<_>>(), vec!["spaces/NEW".to_string()]);
+        assert_eq!(
+            a.joined_spaces.into_iter().collect::<Vec<_>>(),
+            vec!["spaces/NEW".to_string()]
+        );
         let members: i64 = db
-            .with(|c| Ok(c.query_row("SELECT count(*) FROM membership WHERE space = 'spaces/OTHER'", [], |r| r.get(0))?))
+            .with(|c| {
+                Ok(c.query_row(
+                    "SELECT count(*) FROM membership WHERE space = 'spaces/OTHER'",
+                    [],
+                    |r| r.get(0),
+                )?)
+            })
             .unwrap();
         assert_eq!(members, 0);
     }

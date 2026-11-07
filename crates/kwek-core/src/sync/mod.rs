@@ -30,6 +30,8 @@ const INITIAL_PAGE: u32 = 200;
 const OLDER_PAGE: u32 = 100;
 const RENEW_EVERY: Duration = Duration::from_secs(3 * 3600);
 const RECONCILE_EVERY: Duration = Duration::from_secs(15 * 60);
+const POLL_EVERY: Duration = Duration::from_secs(60);
+const RETRY_LIVE_EVERY: Duration = Duration::from_secs(10 * 60);
 /// `spaceEvents.list` only reaches back 28 days; stay clear of the edge.
 const EVENT_RETENTION: Micros = 27 * DAY;
 
@@ -167,21 +169,20 @@ impl Engine {
 
     pub async fn logout(&self) -> Result<()> {
         let _g = self.sync_lock.lock().await;
-        if let (Some(ev), Some(device)) = (&self.events, self.db.with(|c| kv_get(c, "device_id"))?) {
-            if let Err(e) = ev.delete_pubsub(&device).await {
-                tracing::warn!("could not delete device subscription: {e}");
-            }
+        if let (Some(ev), Some(device)) = (&self.events, self.db.with(|c| kv_get(c, "device_id"))?)
+            && let Err(e) = ev.delete_pubsub(&device).await
+        {
+            tracing::warn!("could not delete device subscription: {e}");
         }
         if let Some(t) = &self.tokens {
             t.logout().await?;
         }
         self.db.wipe()?;
-        if let Some(dir) = &self.media_dir {
-            if let Err(e) = std::fs::remove_dir_all(dir) {
-                if e.kind() != std::io::ErrorKind::NotFound {
-                    tracing::warn!("could not clear media cache: {e}");
-                }
-            }
+        if let Some(dir) = &self.media_dir
+            && let Err(e) = std::fs::remove_dir_all(dir)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!("could not clear media cache: {e}");
         }
         *self.me.lock().unwrap() = String::new();
         self.own_subs.lock().unwrap().clear();
@@ -399,11 +400,13 @@ impl Engine {
         let started = ts::now();
         let me = self.me();
         self.refresh_space_list().await?;
-        let rows = self.db.call({
-            let me = me.clone();
-            move |c| read::spaces(c, &me)
-        })
-        .await?;
+        let rows = self
+            .db
+            .call({
+                let me = me.clone();
+                move |c| read::spaces(c, &me)
+            })
+            .await?;
         for s in rows {
             let changed = match (s.last_synced_us, s.last_active_us) {
                 (None, _) => true,
@@ -530,15 +533,22 @@ impl Engine {
     }
 
     async fn ensure_subscriptions(&self) -> Result<String> {
-        let ev = self.events.as_ref().ok_or_else(|| Error::Other("no events client".into()))?;
+        let ev = self
+            .events
+            .as_ref()
+            .ok_or_else(|| Error::Other("no events client".into()))?;
         let device = self.device_id().await?;
         let sub = ev.ensure_pubsub(&device).await?;
         let spaces = ev.ensure_subscription(SPACES_TARGET, SPACES_EVENT_TYPES, true).await?;
-        let user = match ev.ensure_subscription(&user_target(&self.me()), USER_EVENT_TYPES, true).await {
+        let user = match ev
+            .ensure_subscription(&user_target(&self.me()), USER_EVENT_TYPES, true)
+            .await
+        {
             Ok(s) => s,
             Err(e) => {
                 tracing::info!("user subscription with resource failed ({e}); retrying without");
-                ev.ensure_subscription(&user_target(&self.me()), USER_EVENT_TYPES, false).await?
+                ev.ensure_subscription(&user_target(&self.me()), USER_EVENT_TYPES, false)
+                    .await?
             }
         };
         *self.own_subs.lock().unwrap() = vec![spaces.name, user.name];
@@ -563,7 +573,11 @@ impl Engine {
             self.wake.notified().await;
             return Ok(());
         };
-        let sub = self.ensure_subscriptions().await?;
+        let sub = match self.ensure_subscriptions().await {
+            Ok(s) => s,
+            Err(e @ (Error::AuthRequired | Error::Network(_))) => return Err(e),
+            Err(e) => return self.poll(e).await,
+        };
         self.set_status("live", None);
         let mut renewed = Instant::now();
         let mut reconciled = Instant::now();
@@ -646,6 +660,31 @@ impl Engine {
         }
     }
 
+    /// Fallback when live events cannot be set up (for example, the Chat app is not
+    /// configured): reconcile every minute and retry the subscriptions every ten. Returning
+    /// Ok ends the session, so the next one starts live.
+    async fn poll(self: &Arc<Self>, cause: Error) -> Result<()> {
+        tracing::warn!("live events unavailable, polling instead: {cause}");
+        self.set_status("polling", Some(short(&cause)));
+        let mut last_try = Instant::now();
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep(POLL_EVERY) => {}
+                _ = self.wake.notified() => {}
+            }
+            if last_try.elapsed() > RETRY_LIVE_EVERY {
+                last_try = Instant::now();
+                match self.ensure_subscriptions().await {
+                    Ok(_) => return Ok(()),
+                    Err(e @ (Error::AuthRequired | Error::Network(_))) => return Err(e),
+                    Err(e) => tracing::debug!("live events still unavailable: {e}"),
+                }
+            }
+            self.reconcile().await?;
+            self.set_status("polling", Some(short(&cause)));
+        }
+    }
+
     /// Follow-ups after a commit: reaction refetches, new spaces, UI events, notifications.
     async fn after_apply(&self, applied: Applied, live: bool) {
         if applied.is_empty() {
@@ -718,7 +757,9 @@ impl Engine {
         let now = ts::now();
         let b = Builder { me: &me, users: &users };
         for r in rows {
-            let Some(space) = spaces.iter().find(|s| s.name == r.space) else { continue };
+            let Some(space) = spaces.iter().find(|s| s.name == r.space) else {
+                continue;
+            };
             let is_dm = space.space_type == "DIRECT_MESSAGE";
             let fresh = now - r.create_us < 5 * MINUTE;
             let open_here = window_focused && focused_space.as_deref() == Some(r.space.as_str());
@@ -790,7 +831,11 @@ impl Engine {
     fn build_messages(&self, c: &Connection, rows: Vec<read::MessageRow>) -> Result<Vec<MessageView>> {
         let me = self.me();
         let mut user_names: Vec<String> = rows.iter().map(|r| r.sender.clone()).collect();
-        let threads: Vec<String> = rows.iter().filter(|r| !r.is_reply).filter_map(|r| r.thread.clone()).collect();
+        let threads: Vec<String> = rows
+            .iter()
+            .filter(|r| !r.is_reply)
+            .filter_map(|r| r.thread.clone())
+            .collect();
         let stats = read::thread_stats(c, &threads, &me)?;
         for s in stats.values() {
             user_names.extend(s.participants.iter().cloned());
@@ -824,12 +869,12 @@ impl Engine {
             // Replies changed: their roots' summaries changed too.
             let mut roots: Vec<String> = Vec::new();
             for r in rows.iter().filter(|r| r.is_reply) {
-                if let Some(t) = &r.thread {
-                    if let Some(root) = read::thread(c, t)?.into_iter().find(|m| !m.is_reply) {
-                        if !names.contains(&root.name) && !roots.contains(&root.name) {
-                            roots.push(root.name);
-                        }
-                    }
+                if let Some(t) = &r.thread
+                    && let Some(root) = read::thread(c, t)?.into_iter().find(|m| !m.is_reply)
+                    && !names.contains(&root.name)
+                    && !roots.contains(&root.name)
+                {
+                    roots.push(root.name);
                 }
             }
             let mut rows = rows;
@@ -880,13 +925,15 @@ impl Engine {
             events.push(Event::ThreadReadState(rs));
         }
         let me = self.me();
-        let applied = self.db.call(move |c| {
-            let tx = c.transaction()?;
-            let a = apply(&tx, &events, &me)?;
-            tx.commit()?;
-            Ok(a)
-        })
-        .await?;
+        let applied = self
+            .db
+            .call(move |c| {
+                let tx = c.transaction()?;
+                let a = apply(&tx, &events, &me)?;
+                tx.commit()?;
+                Ok(a)
+            })
+            .await?;
         self.after_apply(applied, false).await;
         Ok(())
     }
@@ -899,7 +946,11 @@ impl Engine {
             .call(move |c| {
                 let oldest = read::oldest_synced(c, &space_owned)?;
                 let complete: bool = c
-                    .query_row("SELECT history_complete FROM space WHERE name = ?1", [&space_owned], |r| r.get(0))
+                    .query_row(
+                        "SELECT history_complete FROM space WHERE name = ?1",
+                        [&space_owned],
+                        |r| r.get(0),
+                    )
                     .unwrap_or(false);
                 Ok((oldest, complete))
             })
@@ -997,11 +1048,15 @@ impl Engine {
 
     // ---------------------------------------------------------------- focus
 
-    pub fn set_focus(&self, space: Option<String>, thread: Option<String>, window_focused: bool) {
+    /// What the UI has open, for the "no notification for the open space" rule.
+    pub fn set_open(&self, space: Option<String>, thread: Option<String>) {
         let mut f = self.focus.lock().unwrap();
         f.space = space;
         f.thread = thread;
-        f.window_focused = window_focused;
+    }
+
+    pub fn set_window_focused(&self, focused: bool) {
+        self.focus.lock().unwrap().window_focused = focused;
     }
 
     pub fn set_space_prefs(&self, space: &str, muted: Option<bool>, starred: Option<bool>) -> Result<()> {
@@ -1015,7 +1070,12 @@ impl Engine {
     pub async fn send_message(self: &Arc<Self>, space: &str, thread: Option<&str>, text: &str) -> Result<MessageView> {
         let client_id = format!("client-{}", uuid::Uuid::new_v4().simple());
         let me = self.me();
-        let (space_o, thread_o, text_o, cid) = (space.to_owned(), thread.map(str::to_owned), text.to_owned(), client_id.clone());
+        let (space_o, thread_o, text_o, cid) = (
+            space.to_owned(),
+            thread.map(str::to_owned),
+            text.to_owned(),
+            client_id.clone(),
+        );
         let name = self
             .db
             .call(move |c| write::insert_pending(c, &space_o, thread_o.as_deref(), &text_o, &cid, &me, ts::now()))
@@ -1041,12 +1101,16 @@ impl Engine {
                     m.client_assigned_message_id = Some(client_id.to_owned());
                 }
                 let me = self.me();
-                if let Ok(a) = self.db.call(move |c| {
-                    let tx = c.transaction()?;
-                    let a = apply(&tx, &[Event::MessageUpserted(m)], &me)?;
-                    tx.commit()?;
-                    Ok(a)
-                }).await {
+                if let Ok(a) = self
+                    .db
+                    .call(move |c| {
+                        let tx = c.transaction()?;
+                        let a = apply(&tx, &[Event::MessageUpserted(m)], &me)?;
+                        tx.commit()?;
+                        Ok(a)
+                    })
+                    .await
+                {
                     // The pending row was renamed; tell the UI the old name is gone.
                     self.sink.messages_deleted(space, vec![pending.to_owned()]);
                     self.after_apply(a, false).await;
@@ -1066,7 +1130,11 @@ impl Engine {
     /// Retries a failed send with its original client ID.
     pub async fn retry_send(self: &Arc<Self>, pending: &str) -> Result<()> {
         let p = pending.to_owned();
-        let row = self.db.call(move |c| read::message(c, &p)).await?.ok_or_else(|| Error::Other("not found".into()))?;
+        let row = self
+            .db
+            .call(move |c| read::message(c, &p))
+            .await?
+            .ok_or_else(|| Error::Other("not found".into()))?;
         let client_id: Option<String> = {
             let p = pending.to_owned();
             self.db
@@ -1083,7 +1151,8 @@ impl Engine {
         let pending = pending.to_owned();
         tokio::spawn(async move {
             let text = row.text.clone().unwrap_or_default();
-            this.deliver(&row.space, row.thread.as_deref(), &text, &client_id, &pending).await;
+            this.deliver(&row.space, row.thread.as_deref(), &text, &client_id, &pending)
+                .await;
         });
         Ok(())
     }
@@ -1101,14 +1170,21 @@ impl Engine {
 
     pub async fn edit_message(&self, name: &str, text: &str) -> Result<()> {
         let n = name.to_owned();
-        let old = self.db.call(move |c| read::message(c, &n)).await?.ok_or_else(|| Error::Other("not found".into()))?;
+        let old = self
+            .db
+            .call(move |c| read::message(c, &n))
+            .await?
+            .ok_or_else(|| Error::Other("not found".into()))?;
         let (n, t) = (name.to_owned(), text.to_owned());
         self.db.call(move |c| write::set_text_local(c, &n, &t)).await?;
         self.emit_messages(&old.space, &[name.to_owned()]);
         match self.chat.update_message_text(name, text).await {
             Ok(m) => {
                 let me = self.me();
-                let a = self.db.call(move |c| apply(c, &[Event::MessageUpserted(m)], &me)).await?;
+                let a = self
+                    .db
+                    .call(move |c| apply(c, &[Event::MessageUpserted(m)], &me))
+                    .await?;
                 self.after_apply(a, false).await;
                 Ok(())
             }
@@ -1170,8 +1246,10 @@ impl Engine {
                 Ok((existing, row.and_then(|r| r.reactions)))
             })
             .await?;
-        let mut sums: Vec<EmojiReactionSummary> =
-            summaries.as_deref().and_then(|s| serde_json::from_str(s).ok()).unwrap_or_default();
+        let mut sums: Vec<EmojiReactionSummary> = summaries
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default();
         let adding = existing.is_none();
         match sums.iter_mut().find(|s| s.emoji.key() == key) {
             Some(s) => {
@@ -1224,7 +1302,10 @@ impl Engine {
         // Truth from the server either way.
         if let Ok(fresh) = self.chat.get_message(message).await {
             let me = self.me();
-            let a = self.db.call(move |c| apply(c, &[Event::MessageUpserted(fresh)], &me)).await?;
+            let a = self
+                .db
+                .call(move |c| apply(c, &[Event::MessageUpserted(fresh)], &me))
+                .await?;
             self.after_apply(a, false).await;
         }
         result.map(|_| ())
@@ -1245,7 +1326,9 @@ impl Engine {
         let space = space.to_owned();
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_secs(1)).await;
-            let Some(at) = this.read_marks.lock().unwrap().remove(&space) else { return };
+            let Some(at) = this.read_marks.lock().unwrap().remove(&space) else {
+                return;
+            };
             if let Err(e) = this.chat.update_space_read_state(&space, &ts::format(at + 1)).await {
                 tracing::warn!("mark read failed: {e}");
             }
@@ -1256,7 +1339,9 @@ impl Engine {
     /// Local only: the Chat API has no thread read-state update (see api-findings.md).
     pub async fn mark_thread_read(&self, thread: &str, up_to: Micros) -> Result<()> {
         let t = thread.to_owned();
-        self.db.call(move |c| write::set_thread_read(c, &t, Some(up_to))).await?;
+        self.db
+            .call(move |c| write::set_thread_read(c, &t, Some(up_to)))
+            .await?;
         Ok(())
     }
 
@@ -1275,19 +1360,24 @@ impl Engine {
         let cached: Option<Option<String>> = self
             .db
             .call(move |c| {
-                Ok(c.query_row("SELECT mime FROM media_cache WHERE resource = ?1", [&r], |x| x.get(0))
-                    .ok())
+                Ok(
+                    c.query_row("SELECT mime FROM media_cache WHERE resource = ?1", [&r], |x| x.get(0))
+                        .ok(),
+                )
             })
             .await?;
-        if let Some(mime) = cached {
-            if let Ok(bytes) = tokio::fs::read(&path).await {
-                let r = resource.to_owned();
-                let p = path.to_string_lossy().to_string();
-                let len = bytes.len() as i64;
-                let m = mime.clone();
-                let _ = self.db.call(move |c| write::touch_media(c, &r, &p, m.as_deref(), len, ts::now())).await;
-                return Ok((bytes, mime));
-            }
+        if let Some(mime) = cached
+            && let Ok(bytes) = tokio::fs::read(&path).await
+        {
+            let r = resource.to_owned();
+            let p = path.to_string_lossy().to_string();
+            let len = bytes.len() as i64;
+            let m = mime.clone();
+            let _ = self
+                .db
+                .call(move |c| write::touch_media(c, &r, &p, m.as_deref(), len, ts::now()))
+                .await;
+            return Ok((bytes, mime));
         }
         let (bytes, mime) = self.chat.download_media(resource).await?;
         tokio::fs::create_dir_all(cache_dir).await?;
@@ -1296,7 +1386,9 @@ impl Engine {
         let p = path.to_string_lossy().to_string();
         let len = bytes.len() as i64;
         let m = mime.clone();
-        self.db.call(move |c| write::touch_media(c, &r, &p, m.as_deref(), len, ts::now())).await?;
+        self.db
+            .call(move |c| write::touch_media(c, &r, &p, m.as_deref(), len, ts::now()))
+            .await?;
         Ok((bytes, mime))
     }
 
@@ -1316,7 +1408,11 @@ impl Engine {
 
 fn short(e: &Error) -> String {
     let s = e.to_string();
-    if s.chars().count() > 120 { s.chars().take(117).collect::<String>() + "…" } else { s }
+    if s.chars().count() > 120 {
+        s.chars().take(117).collect::<String>() + "…"
+    } else {
+        s
+    }
 }
 
 /// `from:ada in:tech before:2024-06-01 after:2024-01-01 words` -> FTS query + filters.

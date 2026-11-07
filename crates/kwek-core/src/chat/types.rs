@@ -255,7 +255,14 @@ impl ThreadReadState {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Page<T> {
-    #[serde(default = "Vec::new", alias = "spaces", alias = "messages", alias = "memberships", alias = "reactions", alias = "spaceEvents")]
+    #[serde(
+        default = "Vec::new",
+        alias = "spaces",
+        alias = "messages",
+        alias = "memberships",
+        alias = "reactions",
+        alias = "spaceEvents"
+    )]
     pub items: Vec<T>,
     #[serde(default)]
     pub next_page_token: Option<String>,
@@ -305,8 +312,7 @@ mod tests {
 
     #[test]
     fn page_accepts_any_list_key() {
-        let p: Page<Space> =
-            serde_json::from_str(r#"{"spaces":[{"name":"spaces/A"}],"nextPageToken":""}"#).unwrap();
+        let p: Page<Space> = serde_json::from_str(r#"{"spaces":[{"name":"spaces/A"}],"nextPageToken":""}"#).unwrap();
         assert_eq!(p.items.len(), 1);
         assert_eq!(p.next(), None);
     }

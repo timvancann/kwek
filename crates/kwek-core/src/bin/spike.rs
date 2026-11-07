@@ -36,7 +36,11 @@ async fn main() -> anyhow::Result<()> {
         .init();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let cmd = args.first().map(String::as_str).unwrap_or("help");
-    let arg = |i: usize| args.get(i).cloned().ok_or_else(|| anyhow::anyhow!("missing argument {i}"));
+    let arg = |i: usize| {
+        args.get(i)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("missing argument {i}"))
+    };
 
     let http = http_client();
     let data = default_data_dir();
@@ -52,7 +56,11 @@ async fn main() -> anyhow::Result<()> {
             tokens
                 .login(|url| {
                     eprintln!("Opening the browser for sign-in. If it does not open:\n{url}\n");
-                    std::process::Command::new("open").arg(url).status().map(|_| ()).map_err(Error::from)
+                    std::process::Command::new("open")
+                        .arg(url)
+                        .status()
+                        .map(|_| ())
+                        .map_err(Error::from)
                 })
                 .await?;
             let me = people.me().await?;
@@ -101,16 +109,31 @@ async fn main() -> anyhow::Result<()> {
                 .await?;
             save(&format!("messages_{space}"), &raw);
             let page = chat
-                .list_messages(&space, &ListMessages { page_size: n, newest_first: true, ..Default::default() })
+                .list_messages(
+                    &space,
+                    &ListMessages {
+                        page_size: n,
+                        newest_first: true,
+                        ..Default::default()
+                    },
+                )
                 .await?;
-            let mut senders: Vec<String> =
-                page.items.iter().filter_map(|m| m.sender.as_ref().map(|s| s.name.clone())).collect();
+            let mut senders: Vec<String> = page
+                .items
+                .iter()
+                .filter_map(|m| m.sender.as_ref().map(|s| s.name.clone()))
+                .collect();
             senders.sort();
             senders.dedup();
             let with_names = page
                 .items
                 .iter()
-                .filter(|m| m.sender.as_ref().and_then(|s| s.display_name.as_ref()).is_some_and(|d| !d.is_empty()))
+                .filter(|m| {
+                    m.sender
+                        .as_ref()
+                        .and_then(|s| s.display_name.as_ref())
+                        .is_some_and(|d| !d.is_empty())
+                })
                 .count();
             let resolved = people.resolve(&senders).await?;
             println!(
@@ -122,11 +145,22 @@ async fn main() -> anyhow::Result<()> {
                 senders.len()
             );
             let me = people.me().await?;
-            let lookup = |u: &str| resolved.iter().find(|p| p.user == u).and_then(|p| p.display_name.clone());
+            let lookup = |u: &str| {
+                resolved
+                    .iter()
+                    .find(|p| p.user == u)
+                    .and_then(|p| p.display_name.clone())
+            };
             for m in page.items.iter().rev() {
                 let who = m.sender.as_ref().map(|s| s.name.as_str()).unwrap_or("?");
                 let src = m.formatted_text.as_deref().or(m.text.as_deref()).unwrap_or("");
-                let segs = render::parse(src, &Ctx { me: &me.user, name_of: &lookup });
+                let segs = render::parse(
+                    src,
+                    &Ctx {
+                        me: &me.user,
+                        name_of: &lookup,
+                    },
+                );
                 let lookup = |u: &str| lookup(u).or_else(|| m.sender.as_ref().and_then(|s| s.display_name.clone()));
                 println!(
                     "[{}] {}{} {}: {}",
@@ -143,8 +177,9 @@ async fn main() -> anyhow::Result<()> {
         }
         "members" => {
             let space = arg(1)?;
-            let raw: serde_json::Value =
-                g.get(&format!("https://chat.googleapis.com/v1/{space}/members?pageSize=100")).await?;
+            let raw: serde_json::Value = g
+                .get(&format!("https://chat.googleapis.com/v1/{space}/members?pageSize=100"))
+                .await?;
             save(&format!("members_{space}"), &raw);
             println!("{}", serde_json::to_string_pretty(&raw)?);
         }
@@ -161,15 +196,21 @@ async fn main() -> anyhow::Result<()> {
             let page = chat.list_space_events(&space, &since, None).await?;
             for e in &page.items {
                 let decoded = kwek_core::events::decode_space_event(e);
-                println!("{} {} -> {} decoded", e.event_time.as_deref().unwrap_or("?"), e.event_type, decoded.len());
+                println!(
+                    "{} {} -> {} decoded",
+                    e.event_time.as_deref().unwrap_or("?"),
+                    e.event_type,
+                    decoded.len()
+                );
             }
             println!("{} events, more: {}", page.items.len(), page.next().is_some());
         }
         "reactions" => {
             let msg = arg(1)?;
             let me = people.me().await?;
-            let raw: serde_json::Value =
-                g.get(&format!("https://chat.googleapis.com/v1/{msg}/reactions?pageSize=50")).await?;
+            let raw: serde_json::Value = g
+                .get(&format!("https://chat.googleapis.com/v1/{msg}/reactions?pageSize=50"))
+                .await?;
             save("reactions", &raw);
             println!("all: {}", serde_json::to_string_pretty(&raw)?);
             println!("mine: {:#?}", chat.list_reactions_by(&msg, &me.user).await?);
@@ -179,14 +220,30 @@ async fn main() -> anyhow::Result<()> {
             let device = "spike";
             let sub = events.ensure_pubsub(device).await?;
             println!("pubsub: {sub}");
-            let s = events.ensure_subscription(SPACES_TARGET, SPACES_EVENT_TYPES, true).await?;
-            println!("spaces subscription: {} state={:?} expires={:?}", s.name, s.state, s.expire_time);
-            match events.ensure_subscription(&user_target(&me.user), USER_EVENT_TYPES, true).await {
-                Ok(s) => println!("user subscription: {} state={:?} expires={:?}", s.name, s.state, s.expire_time),
+            let s = events
+                .ensure_subscription(SPACES_TARGET, SPACES_EVENT_TYPES, true)
+                .await?;
+            println!(
+                "spaces subscription: {} state={:?} expires={:?}",
+                s.name, s.state, s.expire_time
+            );
+            match events
+                .ensure_subscription(&user_target(&me.user), USER_EVENT_TYPES, true)
+                .await
+            {
+                Ok(s) => println!(
+                    "user subscription: {} state={:?} expires={:?}",
+                    s.name, s.state, s.expire_time
+                ),
                 Err(e) => {
                     println!("user subscription with includeResource=true failed: {e}\nretrying without resource");
-                    let s = events.ensure_subscription(&user_target(&me.user), USER_EVENT_TYPES, false).await?;
-                    println!("user subscription: {} state={:?} expires={:?}", s.name, s.state, s.expire_time);
+                    let s = events
+                        .ensure_subscription(&user_target(&me.user), USER_EVENT_TYPES, false)
+                        .await?;
+                    println!(
+                        "user subscription: {} state={:?} expires={:?}",
+                        s.name, s.state, s.expire_time
+                    );
                 }
             }
         }
@@ -213,7 +270,10 @@ async fn main() -> anyhow::Result<()> {
                         r.ce_type(),
                         r.message.attributes.get("ce-subject").map(String::as_str).unwrap_or(""),
                         r.message.publish_time,
-                        r.decode().iter().map(|e| format!("{e:?}").chars().take(100).collect::<String>()).collect::<Vec<_>>()
+                        r.decode()
+                            .iter()
+                            .map(|e| format!("{e:?}").chars().take(100).collect::<String>())
+                            .collect::<Vec<_>>()
                     );
                     acks.push(r.ack_id.clone());
                 }
@@ -224,7 +284,10 @@ async fn main() -> anyhow::Result<()> {
             let (space, text) = (arg(1)?, arg(2)?);
             let s = chat.get_space(&space).await?;
             if s.display_name.as_deref() != Some("kwek-test") {
-                anyhow::bail!("refusing to send outside the kwek-test space (this is {:?})", s.display_name);
+                anyhow::bail!(
+                    "refusing to send outside the kwek-test space (this is {:?})",
+                    s.display_name
+                );
             }
             let id = format!("client-{}", uuid::Uuid::new_v4());
             let m = chat.create_message(&space, &text, None, &id).await?;

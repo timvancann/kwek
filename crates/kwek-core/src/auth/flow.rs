@@ -108,13 +108,8 @@ async fn accept_code(listener: &TcpListener, state: &str) -> Result<String> {
             .and_then(|l| l.split_whitespace().nth(1))
             .unwrap_or("/")
             .to_owned();
-        let url = url::Url::parse(&format!("http://127.0.0.1{target}"))
-            .map_err(|e| Error::Other(e.to_string()))?;
-        let get = |k: &str| {
-            url.query_pairs()
-                .find(|(key, _)| key == k)
-                .map(|(_, v)| v.into_owned())
-        };
+        let url = url::Url::parse(&format!("http://127.0.0.1{target}")).map_err(|e| Error::Other(e.to_string()))?;
+        let get = |k: &str| url.query_pairs().find(|(key, _)| key == k).map(|(_, v)| v.into_owned());
         let (code, err, got_state) = (get("code"), get("error"), get("state"));
         if code.is_none() && err.is_none() {
             let _ = sock
@@ -140,11 +135,7 @@ async fn accept_code(listener: &TcpListener, state: &str) -> Result<String> {
     }
 }
 
-pub async fn refresh(
-    http: &reqwest::Client,
-    client: &OAuthClient,
-    refresh_token: &str,
-) -> Result<TokenResponse> {
+pub async fn refresh(http: &reqwest::Client, client: &OAuthClient, refresh_token: &str) -> Result<TokenResponse> {
     let resp = http
         .post(TOKEN_URL)
         .form(&[
@@ -222,7 +213,10 @@ mod tests {
         let task = tokio::spawn(async move { accept_code(&listener, "good").await });
         let http = reqwest::Client::new();
         let base = format!("http://127.0.0.1:{port}");
-        assert_eq!(http.get(format!("{base}/favicon.ico")).send().await.unwrap().status(), 404);
+        assert_eq!(
+            http.get(format!("{base}/favicon.ico")).send().await.unwrap().status(),
+            404
+        );
         let r = http.get(format!("{base}/?code=abc&state=good")).send().await.unwrap();
         assert_eq!(r.status(), 200);
         assert_eq!(task.await.unwrap().unwrap(), "abc");

@@ -1,0 +1,234 @@
+//! IPC commands: request/response against local state. Errors cross as plain sentences the
+//! UI can show in a toast.
+
+use kwek_core::Error;
+use kwek_core::views::{AuthState, MessageView, SearchResult, SpaceSummary, SyncStatus, UserRef};
+use tauri::{AppHandle, State};
+use tauri_plugin_opener::OpenerExt;
+
+use crate::AppState;
+
+type Res<T> = Result<T, String>;
+
+fn msg(e: Error) -> String {
+    match e {
+        Error::AuthRequired => "Sign in to Google again to continue.".into(),
+        Error::NoOAuthClient => "This build has no Google client configured.".into(),
+        Error::Network(_) => "No connection. Try again when you are back online.".into(),
+        Error::Api { status: 403, .. } => "Google refused this action (no permission).".into(),
+        Error::Api { status: 404, .. } => "That no longer exists in Google Chat.".into(),
+        Error::Api { status: 429, .. } => "Google is rate limiting kwek. Try again in a moment.".into(),
+        Error::Api { message, .. } if !message.is_empty() => format!("Google Chat: {message}"),
+        other => other.to_string(),
+    }
+}
+
+#[tauri::command]
+pub fn auth_status(state: State<'_, AppState>) -> AuthState {
+    state.engine.auth_state()
+}
+
+#[tauri::command]
+pub async fn login(app: AppHandle, state: State<'_, AppState>) -> Res<()> {
+    state
+        .engine
+        .login(|url| {
+            app.opener()
+                .open_url(url, None::<&str>)
+                .map_err(|e| Error::Other(format!("could not open the browser: {e}")))
+        })
+        .await
+        .map_err(msg)
+}
+
+#[tauri::command]
+pub async fn logout(state: State<'_, AppState>) -> Res<()> {
+    state.engine.logout().await.map_err(msg)
+}
+
+#[tauri::command]
+pub fn sync_status(state: State<'_, AppState>) -> SyncStatus {
+    state.engine.sync_status()
+}
+
+#[tauri::command]
+pub fn refresh(state: State<'_, AppState>) {
+    state.engine.poke();
+}
+
+#[tauri::command]
+pub fn list_spaces(state: State<'_, AppState>) -> Res<Vec<SpaceSummary>> {
+    state.engine.list_spaces().map_err(msg)
+}
+
+#[tauri::command]
+pub fn get_messages(
+    state: State<'_, AppState>,
+    space: String,
+    before: Option<i64>,
+    limit: u32,
+) -> Res<Vec<MessageView>> {
+    state.engine.get_messages(&space, before, limit).map_err(msg)
+}
+
+#[tauri::command]
+pub async fn load_older(state: State<'_, AppState>, space: String) -> Res<u32> {
+    state.engine.load_older(&space).await.map_err(msg)
+}
+
+/// Returns the cached thread now and refreshes it from the API in the background; fresh
+/// replies arrive as `messages:upserted`.
+#[tauri::command]
+pub fn get_thread(state: State<'_, AppState>, thread: String) -> Res<Vec<MessageView>> {
+    let cached = state.engine.get_thread_cached(&thread).map_err(msg)?;
+    let engine = state.engine.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = engine.fetch_thread(&thread).await {
+            tracing::warn!("thread fetch failed: {e}");
+        }
+    });
+    Ok(cached)
+}
+
+#[tauri::command]
+pub async fn send_message(
+    state: State<'_, AppState>,
+    space: String,
+    thread: Option<String>,
+    text: String,
+) -> Res<MessageView> {
+    let text = text.trim_end().to_owned();
+    if text.trim().is_empty() {
+        return Err("Nothing to send.".into());
+    }
+    state
+        .engine
+        .send_message(&space, thread.as_deref(), &text)
+        .await
+        .map_err(msg)
+}
+
+#[tauri::command]
+pub async fn retry_send(state: State<'_, AppState>, name: String) -> Res<()> {
+    state.engine.retry_send(&name).await.map_err(msg)
+}
+
+#[tauri::command]
+pub async fn discard_failed(state: State<'_, AppState>, name: String) -> Res<()> {
+    state.engine.discard_failed(&name).await.map_err(msg)
+}
+
+#[tauri::command]
+pub async fn edit_message(state: State<'_, AppState>, name: String, text: String) -> Res<()> {
+    if text.trim().is_empty() {
+        return Err("A message cannot be empty. Delete it instead.".into());
+    }
+    state.engine.edit_message(&name, text.trim_end()).await.map_err(msg)
+}
+
+#[tauri::command]
+pub async fn delete_message(state: State<'_, AppState>, name: String) -> Res<()> {
+    state.engine.delete_message(&name).await.map_err(msg)
+}
+
+#[tauri::command]
+pub async fn toggle_reaction(state: State<'_, AppState>, message: String, emoji: String) -> Res<()> {
+    state.engine.toggle_reaction(&message, &emoji).await.map_err(msg)
+}
+
+#[tauri::command]
+pub async fn mark_read(state: State<'_, AppState>, space: String, up_to: i64) -> Res<()> {
+    state.engine.mark_read(&space, up_to).await.map_err(msg)
+}
+
+#[tauri::command]
+pub async fn mark_thread_read(state: State<'_, AppState>, thread: String, up_to: i64) -> Res<()> {
+    state.engine.mark_thread_read(&thread, up_to).await.map_err(msg)
+}
+
+#[tauri::command]
+pub fn search(state: State<'_, AppState>, query: String, limit: u32, offset: u32) -> Res<SearchResult> {
+    state.engine.search(&query, limit, offset).map_err(msg)
+}
+
+#[tauri::command]
+pub fn list_members(state: State<'_, AppState>, space: String) -> Res<Vec<UserRef>> {
+    state.engine.list_members(&space).map_err(msg)
+}
+
+#[tauri::command]
+pub fn set_space_prefs(
+    state: State<'_, AppState>,
+    space: String,
+    muted: Option<bool>,
+    starred: Option<bool>,
+) -> Res<()> {
+    state.engine.set_space_prefs(&space, muted, starred).map_err(msg)
+}
+
+#[tauri::command]
+pub fn set_open(state: State<'_, AppState>, space: Option<String>, thread: Option<String>) {
+    state.engine.set_open(space, thread);
+}
+
+#[tauri::command]
+pub fn last_own_message(state: State<'_, AppState>, space: String, thread: Option<String>) -> Res<Option<MessageView>> {
+    state.engine.last_own_message(&space, thread.as_deref()).map_err(msg)
+}
+
+/// Opens a link in the system browser. Only web and mail links; never files or apps.
+#[tauri::command]
+pub fn open_url(app: AppHandle, url: String) -> Res<()> {
+    let ok = url::Url::parse(&url)
+        .map(|u| matches!(u.scheme(), "https" | "http" | "mailto"))
+        .unwrap_or(false);
+    if !ok {
+        return Err("kwek only opens web and mail links.".into());
+    }
+    app.opener().open_url(url, None::<&str>).map_err(|e| e.to_string())
+}
+
+/// Saves an attachment to ~/Downloads and opens it.
+#[tauri::command]
+pub async fn download_attachment(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    resource: String,
+    name: String,
+) -> Res<String> {
+    let (bytes, _) = state.engine.media(&state.media_dir, &resource).await.map_err(msg)?;
+    let dir = dirs_downloads().ok_or("No Downloads folder found.")?;
+    let safe: String = name
+        .chars()
+        .map(|c| {
+            if c == '/' || c == '\\' || c == ':' || c.is_control() {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let safe = if safe.trim_matches('.').is_empty() {
+        "attachment".to_owned()
+    } else {
+        safe
+    };
+    let mut path = dir.join(&safe);
+    let mut n = 1;
+    while path.exists() {
+        let (stem, ext) = match safe.rsplit_once('.') {
+            Some((s, e)) => (s.to_owned(), format!(".{e}")),
+            None => (safe.clone(), String::new()),
+        };
+        path = dir.join(format!("{stem} ({n}){ext}"));
+        n += 1;
+    }
+    tokio::fs::write(&path, bytes).await.map_err(|e| e.to_string())?;
+    let p = path.to_string_lossy().to_string();
+    let _ = app.opener().reveal_item_in_dir(&path);
+    Ok(p)
+}
+
+fn dirs_downloads() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join("Downloads"))
+}

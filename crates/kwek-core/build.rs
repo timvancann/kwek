@@ -16,8 +16,7 @@ fn main() {
 
     let (mut id, mut secret) = (String::new(), String::new());
     if let Ok(text) = std::fs::read_to_string(&file) {
-        let json: serde_json::Value =
-            serde_json::from_str(&text).expect("secrets/oauth-client.json is not valid JSON");
+        let json: serde_json::Value = serde_json::from_str(&text).expect("secrets/oauth-client.json is not valid JSON");
         let client = json
             .get("installed")
             .expect("secrets/oauth-client.json has no \"installed\" key; create a Desktop app client");

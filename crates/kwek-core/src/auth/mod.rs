@@ -60,10 +60,10 @@ impl TokenManager {
     /// A valid access token, refreshing when it has under a minute left.
     pub async fn access_token(&self) -> Result<String> {
         let mut guard = self.access.lock().await;
-        if let Some(a) = guard.as_ref() {
-            if a.expires > Instant::now() + Duration::from_secs(60) {
-                return Ok(a.token.clone());
-            }
+        if let Some(a) = guard.as_ref()
+            && a.expires > Instant::now() + Duration::from_secs(60)
+        {
+            return Ok(a.token.clone());
         }
         let refresh = self.store.load()?.ok_or(Error::AuthRequired)?;
         match flow::refresh(&self.http, self.client()?, &refresh).await {
@@ -95,10 +95,10 @@ impl TokenManager {
 
     /// Revokes at Google (best effort) and forgets everything locally.
     pub async fn logout(&self) -> Result<()> {
-        if let Ok(Some(r)) = self.store.load() {
-            if let Err(e) = flow::revoke(&self.http, &r).await {
-                tracing::warn!("token revoke failed: {e}");
-            }
+        if let Ok(Some(r)) = self.store.load()
+            && let Err(e) = flow::revoke(&self.http, &r).await
+        {
+            tracing::warn!("token revoke failed: {e}");
         }
         self.store.clear()?;
         *self.access.lock().await = None;

@@ -112,14 +112,19 @@ pub struct MessageView {
 pub enum AuthState {
     SignedOut,
     SigningIn,
-    SignedIn { email: Option<String>, name: Option<String>, user: String },
+    SignedIn {
+        email: Option<String>,
+        name: Option<String>,
+        user: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, TS, PartialEq)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct SyncStatus {
-    /// `starting`, `bootstrapping`, `live`, `reconciling`, `offline`, `authRequired`, `error`.
+    /// `starting`, `bootstrapping`, `live`, `polling`, `reconciling`, `offline`,
+    /// `authRequired`, `error`.
     pub state: String,
     pub detail: Option<String>,
 }
@@ -162,12 +167,18 @@ impl Builder<'_> {
         let u = self.users.get(name);
         let display_name = u
             .and_then(|u| u.display_name.clone().or_else(|| u.email.clone()))
-            .unwrap_or_else(|| if name.is_empty() { "Unknown".into() } else { "Unknown user".into() });
+            .unwrap_or_else(|| {
+                if name.is_empty() {
+                    "Unknown".into()
+                } else {
+                    "Unknown user".into()
+                }
+            });
         UserRef {
             name: name.to_owned(),
             display_name,
             email: u.and_then(|u| u.email.clone()),
-            avatar_url: u.and_then(|u| u.avatar_url.clone()),
+            avatar_url: u.and_then(|u| u.avatar_url.as_deref()).and_then(avatar_media_url),
         }
     }
 
@@ -283,12 +294,14 @@ impl Builder<'_> {
             blocks,
             attachments: attachments.iter().map(attachment_view).collect(),
             reactions,
-            thread_summary: stats.filter(|s| s.reply_count > 0 && !m.is_reply).map(|s| ThreadSummary {
-                reply_count: s.reply_count as u32,
-                last_reply_us: s.last_reply_us,
-                participants: s.participants.iter().map(|p| self.user(p)).collect(),
-                unread: s.unread,
-            }),
+            thread_summary: stats
+                .filter(|s| s.reply_count > 0 && !m.is_reply)
+                .map(|s| ThreadSummary {
+                    reply_count: s.reply_count as u32,
+                    last_reply_us: s.last_reply_us,
+                    participants: s.participants.iter().map(|p| self.user(p)).collect(),
+                    unread: s.unread,
+                }),
             local_state: m.local_state.clone(),
             has_cards: m.cards.as_deref().is_some_and(|c| c != "[]"),
             web_url: message_web_url(space_uri, m),
@@ -325,6 +338,25 @@ fn rich_link_blocks(annotations: Option<&str>) -> Vec<Block> {
     } else {
         vec![Block::Paragraph { inlines: links }]
     }
+}
+
+/// Avatars are proxied through Rust (`media://localhost/avatar/...`) so the webview never
+/// talks to the network. Only Google's avatar host is allowed.
+pub fn avatar_media_url(url: &str) -> Option<String> {
+    is_avatar_host(url).then(|| {
+        format!(
+            "media://localhost/avatar/{}",
+            percent_encoding::utf8_percent_encode(url, percent_encoding::NON_ALPHANUMERIC)
+        )
+    })
+}
+
+pub fn is_avatar_host(url: &str) -> bool {
+    url::Url::parse(url).ok().is_some_and(|u| {
+        u.scheme() == "https"
+            && u.host_str()
+                .is_some_and(|h| h == "googleusercontent.com" || h.ends_with(".googleusercontent.com"))
+    })
 }
 
 pub fn media_url(resource: &str) -> String {
@@ -375,7 +407,10 @@ pub fn snippet_parts(s: &str) -> Vec<SnippetPart> {
         match c {
             '\u{1}' | '\u{2}' => {
                 if !buf.is_empty() {
-                    out.push(SnippetPart { text: std::mem::take(&mut buf), hit });
+                    out.push(SnippetPart {
+                        text: std::mem::take(&mut buf),
+                        hit,
+                    });
                 }
                 hit = c == '\u{1}';
             }
@@ -403,6 +438,9 @@ mod tests {
     #[test]
     fn group_names() {
         assert_eq!(first_names(&["Ada Lovelace".into(), "Ron B".into()]), "Ada, Ron");
-        assert_eq!(first_names(&["A".into(), "B".into(), "C".into(), "D".into(), "E".into()]), "A, B, C, +2");
+        assert_eq!(
+            first_names(&["A".into(), "B".into(), "C".into(), "D".into(), "E".into()]),
+            "A, B, C, +2"
+        );
     }
 }

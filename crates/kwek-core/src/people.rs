@@ -84,10 +84,7 @@ const FIELDS: &str = "names,emailAddresses,photos";
 #[async_trait]
 impl PeopleApi for HttpPeople {
     async fn me(&self) -> Result<Person> {
-        let p: ApiPerson = self
-            .g
-            .get(&format!("{BASE}/people/me?personFields={FIELDS}"))
-            .await?;
+        let p: ApiPerson = self.g.get(&format!("{BASE}/people/me?personFields={FIELDS}")).await?;
         Ok(p.into_person())
     }
 
@@ -114,8 +111,7 @@ impl PeopleApi for HttpPeople {
             person: Option<ApiPerson>,
         }
         let r: Resp = self.g.get(&url).await?;
-        Ok(r
-            .responses
+        Ok(r.responses
             .into_iter()
             .filter_map(|e| e.person)
             .map(ApiPerson::into_person)

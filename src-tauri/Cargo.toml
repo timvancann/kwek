@@ -1,0 +1,28 @@
+[package]
+name = "kwek"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[lib]
+name = "kwek_app"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+kwek-core = { path = "../crates/kwek-core" }
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+tauri-plugin-single-instance = "2"
+tauri-plugin-window-state = "2"
+mac-notification-sys = "0.6"
+percent-encoding.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-appender = "0.2"
+url.workspace = true

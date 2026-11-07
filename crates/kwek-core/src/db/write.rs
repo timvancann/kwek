@@ -127,7 +127,11 @@ pub fn upsert_message(c: &Connection, m: &Message, me: &str) -> Result<Upsert> {
             raw,
         ],
     )?;
-    Ok(if existing.is_some() { Upsert::Updated } else { Upsert::Inserted })
+    Ok(if existing.is_some() {
+        Upsert::Updated
+    } else {
+        Upsert::Inserted
+    })
 }
 
 /// An optimistic row (`pending:` / failed) whose client ID matches a server message takes
@@ -188,13 +192,26 @@ pub fn insert_pending(
         "INSERT INTO message (name, space, thread, is_reply, sender, create_us, update_us, text,
                               formatted_text, client_id, local_state, raw)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, ?7, ?8, ?9, 'pending', '{}')",
-        params![name, space, thread, thread.is_some(), me, now, text, formatted, client_id],
+        params![
+            name,
+            space,
+            thread,
+            thread.is_some(),
+            me,
+            now,
+            text,
+            formatted,
+            client_id
+        ],
     )?;
     Ok(name)
 }
 
 pub fn set_local_state(c: &Connection, name: &str, state: &str) -> Result<()> {
-    c.execute("UPDATE message SET local_state = ?2 WHERE name = ?1", params![name, state])?;
+    c.execute(
+        "UPDATE message SET local_state = ?2 WHERE name = ?1",
+        params![name, state],
+    )?;
     Ok(())
 }
 
@@ -212,7 +229,10 @@ pub fn delete_row(c: &Connection, name: &str) -> Result<()> {
 }
 
 pub fn set_reactions(c: &Connection, message: &str, summaries: &str) -> Result<()> {
-    c.execute("UPDATE message SET reactions = ?2 WHERE name = ?1", params![message, summaries])?;
+    c.execute(
+        "UPDATE message SET reactions = ?2 WHERE name = ?1",
+        params![message, summaries],
+    )?;
     Ok(())
 }
 
@@ -254,7 +274,9 @@ pub fn upsert_space(c: &Connection, s: &Space) -> Result<()> {
             s.display_name.as_deref().filter(|d| !d.is_empty()),
             s.threaded(),
             s.last_active_time.as_deref().and_then(ts::parse),
-            s.membership_count.as_ref().and_then(|m| m.joined_direct_human_user_count),
+            s.membership_count
+                .as_ref()
+                .and_then(|m| m.joined_direct_human_user_count),
             s.space_uri,
             serde_json::to_string(s)?,
         ],
@@ -274,7 +296,10 @@ pub fn delete_space(c: &Connection, name: &str) -> Result<()> {
 }
 
 pub fn set_space_synced(c: &Connection, space: &str, us: Micros) -> Result<()> {
-    c.execute("UPDATE space SET last_synced_us = ?2 WHERE name = ?1", params![space, us])?;
+    c.execute(
+        "UPDATE space SET last_synced_us = ?2 WHERE name = ?1",
+        params![space, us],
+    )?;
     Ok(())
 }
 
@@ -363,7 +388,10 @@ pub fn upsert_membership(c: &Connection, space: &str, member: &User, role: Optio
 }
 
 pub fn delete_membership(c: &Connection, space: &str, member: &str) -> Result<()> {
-    c.execute("DELETE FROM membership WHERE space = ?1 AND member = ?2", params![space, member])?;
+    c.execute(
+        "DELETE FROM membership WHERE space = ?1 AND member = ?2",
+        params![space, member],
+    )?;
     Ok(())
 }
 
@@ -400,7 +428,14 @@ pub fn set_account(c: &Connection, id: &str, email: Option<&str>, name: Option<&
     Ok(())
 }
 
-pub fn touch_media(c: &Connection, resource: &str, path: &str, mime: Option<&str>, bytes: i64, now: Micros) -> Result<()> {
+pub fn touch_media(
+    c: &Connection,
+    resource: &str,
+    path: &str,
+    mime: Option<&str>,
+    bytes: i64,
+    now: Micros,
+) -> Result<()> {
     c.execute(
         "INSERT INTO media_cache (resource, path, mime, bytes, last_used_us) VALUES (?1, ?2, ?3, ?4, ?5)
          ON CONFLICT(resource) DO UPDATE SET last_used_us = excluded.last_used_us",

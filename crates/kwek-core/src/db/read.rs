@@ -15,14 +15,16 @@ pub struct Account {
 }
 
 pub fn account(c: &Connection) -> Result<Option<Account>> {
-    Ok(c.query_row("SELECT id, email, display_name FROM account LIMIT 1", [], |r| {
-        Ok(Account {
-            id: r.get(0)?,
-            email: r.get(1)?,
-            display_name: r.get(2)?,
+    Ok(
+        c.query_row("SELECT id, email, display_name FROM account LIMIT 1", [], |r| {
+            Ok(Account {
+                id: r.get(0)?,
+                email: r.get(1)?,
+                display_name: r.get(2)?,
+            })
         })
-    })
-    .optional()?)
+        .optional()?,
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -180,7 +182,9 @@ pub fn messages_by_name(c: &Connection, names: &[String]) -> Result<Vec<MessageR
         placeholders(names.len())
     );
     let mut st = c.prepare(&sql)?;
-    Ok(st.query_map(params_from_iter(names), msg_row)?.collect::<rusqlite::Result<Vec<_>>>()?)
+    Ok(st
+        .query_map(params_from_iter(names), msg_row)?
+        .collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
 /// The newest own message in a space (or thread), for "up arrow edits last".
@@ -299,7 +303,9 @@ pub fn unresolved_users(c: &Connection, limit: u32) -> Result<Vec<String>> {
          WHERE display_name IS NULL AND resolved_at_us IS NULL AND name LIKE 'users/%' AND name != 'users/all'
          LIMIT ?1",
     )?;
-    Ok(st.query_map([limit], |r| r.get(0))?.collect::<rusqlite::Result<Vec<_>>>()?)
+    Ok(st
+        .query_map([limit], |r| r.get(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
 pub fn members(c: &Connection, space: &str) -> Result<Vec<UserRow>> {
@@ -313,7 +319,9 @@ pub fn members(c: &Connection, space: &str) -> Result<Vec<UserRow>> {
 
 pub fn member_names(c: &Connection, space: &str) -> Result<Vec<String>> {
     let mut st = c.prepare("SELECT member FROM membership WHERE space = ?1")?;
-    Ok(st.query_map([space], |r| r.get(0))?.collect::<rusqlite::Result<Vec<_>>>()?)
+    Ok(st
+        .query_map([space], |r| r.get(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
 /// For each message, the emoji keys the signed-in user reacted with.
@@ -347,9 +355,13 @@ pub fn my_reaction_name(c: &Connection, message: &str, emoji_key: &str) -> Resul
 }
 
 pub fn space_read(c: &Connection, space: &str) -> Result<Option<Micros>> {
-    Ok(c.query_row("SELECT last_read_us FROM space_read_state WHERE space = ?1", [space], |r| r.get(0))
-        .optional()?
-        .flatten())
+    Ok(c.query_row(
+        "SELECT last_read_us FROM space_read_state WHERE space = ?1",
+        [space],
+        |r| r.get(0),
+    )
+    .optional()?
+    .flatten())
 }
 
 /// Messages with reactions whose own-reaction state was never fetched.
@@ -362,7 +374,9 @@ pub fn needs_my_reactions(c: &Connection, names: &[String]) -> Result<Vec<String
         placeholders(names.len())
     );
     let mut st = c.prepare(&sql)?;
-    Ok(st.query_map(params_from_iter(names), |r| r.get(0))?.collect::<rusqlite::Result<Vec<_>>>()?)
+    Ok(st
+        .query_map(params_from_iter(names), |r| r.get(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
 #[derive(Debug, Clone, Default)]

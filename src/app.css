@@ -1,0 +1,120 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+/*
+ * kwek light theme. shadcn variable names so its components pick the theme up.
+ * Boldness lives in one place: highlighter yellow marks what needs you (mentions, the
+ * unread line). Everything else is quiet ink on white with a cool grey-green sidebar.
+ * Contrast (WCAG 2.2, computed): ink on white 16.1, muted on white 6.7, muted on the active
+ * sidebar row 4.8, muted on highlight 5.3, accent on white 6.4, white on accent 6.4,
+ * input border on white 3.2 (non-text 3:1).
+ */
+:root {
+  --background: #ffffff;
+  --foreground: #1b2320;
+  --sidebar: #eef2f0;
+  --sidebar-foreground: #1b2320;
+  --sidebar-hover: #e2e8e5;
+  --sidebar-active: #d3ddd9;
+  --muted: #f3f5f4;
+  --muted-foreground: #525f5a;
+  --border: #dde3e0;
+  --input: #87948f;
+  --ring: #0e6b58;
+  --accent: #0e6b58;
+  --accent-foreground: #ffffff;
+  --accent-soft: #e4f0ec;
+  --primary: #0e6b58;
+  --primary-foreground: #ffffff;
+  --secondary: #f3f5f4;
+  --secondary-foreground: #1b2320;
+  --destructive: #b42318;
+  --destructive-foreground: #ffffff;
+  --popover: #ffffff;
+  --popover-foreground: #1b2320;
+  --card: #ffffff;
+  --card-foreground: #1b2320;
+  --highlight: #fff1b8;
+  --highlight-strong: #f5d659;
+  --badge: #1b2320;
+  --badge-foreground: #ffffff;
+  --radius: 6px;
+  color-scheme: light;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-hover: var(--sidebar-hover);
+  --color-sidebar-active: var(--sidebar-active);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent-soft: var(--accent-soft);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-highlight: var(--highlight);
+  --color-highlight-strong: var(--highlight-strong);
+  --color-badge: var(--badge);
+  --color-badge-foreground: var(--badge-foreground);
+  --radius-sm: calc(var(--radius) - 2px);
+  --radius-md: var(--radius);
+  --radius-lg: calc(var(--radius) + 2px);
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+  html,
+  body {
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+    background: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    font-size: 13px;
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+    /* Desktop app: text is selectable inside messages only. */
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  #app {
+    height: 100%;
+  }
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 1px;
+  }
+  .selectable,
+  .selectable * {
+    user-select: text;
+    -webkit-user-select: text;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
