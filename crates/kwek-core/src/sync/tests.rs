@@ -420,6 +420,36 @@ async fn bootstrap_fills_cache_with_unread_and_dm_names() {
 }
 
 #[tokio::test]
+async fn hidden_and_ordered_spaces_survive_a_refresh() {
+    let f = world();
+    let (e, _) = engine(&f).await;
+    e.bootstrap().await.unwrap();
+    e.set_space_prefs("spaces/team", None, None, Some(true)).unwrap();
+    e.set_space_order(&["spaces/dm".into(), "spaces/team".into()]).unwrap();
+    // A reconcile rewrites every space from Google; local preferences must stay.
+    e.reconcile(true).await.unwrap();
+    let spaces = e.list_spaces().unwrap();
+    let team = spaces.iter().find(|s| s.name == "spaces/team").unwrap();
+    let dm = spaces.iter().find(|s| s.name == "spaces/dm").unwrap();
+    assert!(team.hidden);
+    assert_eq!((dm.position, team.position), (Some(0), Some(1)));
+    e.set_space_prefs("spaces/team", None, None, Some(false)).unwrap();
+    assert!(
+        !e.list_spaces()
+            .unwrap()
+            .iter()
+            .find(|s| s.name == "spaces/team")
+            .unwrap()
+            .hidden
+    );
+    // A new order without a space clears its old place, so nothing ties with the new ones.
+    e.set_space_order(&["spaces/dm".into()]).unwrap();
+    let spaces = e.list_spaces().unwrap();
+    assert_eq!(spaces.iter().find(|s| s.name == "spaces/dm").unwrap().position, Some(0));
+    assert_eq!(spaces.iter().find(|s| s.name == "spaces/team").unwrap().position, None);
+}
+
+#[tokio::test]
 async fn reconcile_replays_missed_events_without_duplicates() {
     let f = world();
     let (e, _) = engine(&f).await;

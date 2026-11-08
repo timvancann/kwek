@@ -316,8 +316,15 @@ pub async fn set_space_prefs(
     space: String,
     muted: Option<bool>,
     starred: Option<bool>,
+    hidden: Option<bool>,
 ) -> Res<()> {
-    blocking(&state, move |e| e.set_space_prefs(&space, muted, starred)).await
+    blocking(&state, move |e| e.set_space_prefs(&space, muted, starred, hidden)).await
+}
+
+/// The user's own order for the Spaces section, top first.
+#[tauri::command]
+pub async fn set_space_order(state: State<'_, AppState>, names: Vec<String>) -> Res<()> {
+    blocking(&state, move |e| e.set_space_order(&names)).await
 }
 
 #[tauri::command]

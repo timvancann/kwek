@@ -35,6 +35,10 @@ pub struct SpaceSummary {
     pub mentions: u32,
     pub muted: bool,
     pub starred: bool,
+    /// Kept out of the sidebar's main sections; shown under Hidden.
+    pub hidden: bool,
+    /// Place in the user's own order for the Spaces section; None when never placed.
+    pub position: Option<i32>,
     #[ts(type = "number")]
     pub last_active_us: Micros,
     #[ts(type = "number | null")]
@@ -280,6 +284,8 @@ impl Builder<'_> {
             mentions: s.mentions.max(0) as u32,
             muted: s.muted,
             starred: s.starred,
+            hidden: s.hidden,
+            position: s.position.map(|p| p as i32),
             last_active_us: s.last_active_us.unwrap_or(0).max(s.newest_us.unwrap_or(0)),
             last_read_us: s.last_read_us,
             threaded: s.threaded,

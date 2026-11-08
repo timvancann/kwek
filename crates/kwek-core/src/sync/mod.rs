@@ -1444,8 +1444,22 @@ impl Engine {
         self.focus.lock().unwrap().window_focused = focused;
     }
 
-    pub fn set_space_prefs(&self, space: &str, muted: Option<bool>, starred: Option<bool>) -> Result<()> {
-        self.db.with(|c| write::set_space_prefs(c, space, muted, starred))?;
+    pub fn set_space_prefs(
+        &self,
+        space: &str,
+        muted: Option<bool>,
+        starred: Option<bool>,
+        hidden: Option<bool>,
+    ) -> Result<()> {
+        self.db
+            .with(|c| write::set_space_prefs(c, space, muted, starred, hidden))?;
+        self.emit_spaces();
+        Ok(())
+    }
+
+    /// The user's own order for the Spaces section, top first.
+    pub fn set_space_order(&self, names: &[String]) -> Result<()> {
+        self.db.with(|c| write::set_space_order(c, names))?;
         self.emit_spaces();
         Ok(())
     }

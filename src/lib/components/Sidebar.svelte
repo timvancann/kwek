@@ -1,7 +1,8 @@
 <script lang="ts">
   import type { SpaceSummary } from "$lib/api";
-  import { app } from "$lib/state.svelte";
+  import { app, type SpaceSort } from "$lib/state.svelte";
   import { cn } from "$lib/utils";
+  import { tick } from "svelte";
   import Avatar from "./Avatar.svelte";
   import SyncIndicator from "./SyncIndicator.svelte";
   import Hash from "@lucide/svelte/icons/hash";
@@ -10,11 +11,62 @@
   import ChevronDown from "@lucide/svelte/icons/chevron-down";
   import Search from "@lucide/svelte/icons/search";
   import LogOut from "@lucide/svelte/icons/log-out";
+  import Eye from "@lucide/svelte/icons/eye";
 
   let nav: HTMLElement | undefined = $state();
 
+  const SORT_LABEL: Record<SpaceSort, string> = { recent: "Recent", az: "A to Z", custom: "Custom" };
+  const SORT_SPOKEN: Record<SpaceSort, string> = { recent: "by recent activity", az: "A to Z", custom: "in your own order" };
+  const NEXT_SORT: Record<SpaceSort, SpaceSort> = { recent: "az", az: "custom", custom: "recent" };
+
+  // ------------------------------------------------------------- reordering spaces
+
+  /** The space being dragged, and where it would land. */
+  let dragging: string | null = $state(null);
+  let dropAt: { name: string; after: boolean } | null = $state(null);
+
+  async function move(s: SpaceSummary, items: SpaceSummary[], to: number) {
+    const at = await app.moveSpace(s.name, to);
+    if (at === null) app.say(to < 0 ? `${s.displayName} is already at the top.` : to >= items.length ? `${s.displayName} is already at the bottom.` : "");
+    else app.say(`${s.displayName} moved to ${at + 1} of ${items.length}.`);
+    await tick();
+    nav?.querySelector<HTMLElement>(`[data-space="${CSS.escape(s.name)}"]`)?.focus();
+  }
+
+  /** ⌥↑/⌥↓ on a space moves it, like dragging. */
+  function onRowKeydown(e: KeyboardEvent, s: SpaceSummary, sectionId: string, items: SpaceSummary[]) {
+    if (sectionId !== "spaces" || !e.altKey || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const i = items.findIndex((x) => x.name === s.name);
+    void move(s, items, i + (e.key === "ArrowDown" ? 1 : -1));
+  }
+
+  function onDragOver(e: DragEvent, s: SpaceSummary) {
+    if (!dragging) return;
+    e.preventDefault();
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    dropAt = { name: s.name, after: e.clientY > r.top + r.height / 2 };
+  }
+
+  function onDrop(e: DragEvent, items: SpaceSummary[]) {
+    e.preventDefault();
+    const from = items.findIndex((x) => x.name === dragging);
+    const over = items.findIndex((x) => x.name === dropAt?.name);
+    if (from >= 0 && over >= 0 && dropAt) {
+      let to = over + (dropAt.after ? 1 : 0);
+      if (from < to) to -= 1;
+      void move(items[from], items, to);
+    }
+    dragging = null;
+    dropAt = null;
+  }
+
   /** Highlighted row in sidebar zone (j/k), else the open conversation. */
   const focusName = $derived(app.zone === "sidebar" ? (app.sidebarFocus ?? app.current) : app.current);
+  /** The row Tab lands on: the highlighted one when it is shown, else the first (it may sit
+   * in the collapsed Hidden section). */
+  const tabbable = $derived(app.sidebarOrder.some((s) => s.name === focusName) ? focusName : app.sidebarOrder[0]?.name);
 
   // Focus follows the keyboard highlight while the sidebar is the active zone.
   $effect(() => {
@@ -93,21 +145,53 @@
           {#if section.id === "spaces" && !app.collapsed[section.id]}
             <button
               class="h-6 shrink-0 rounded-sm px-2 text-[11px] text-muted-foreground hover:bg-sidebar-hover hover:text-foreground"
-              aria-label={app.alphabetical ? "Sorted A to Z. Sort by recent activity" : "Sorted by recent activity. Sort A to Z"}
-              onclick={() => (app.alphabetical = !app.alphabetical)}>{app.alphabetical ? "A to Z" : "Recent"}</button
+              aria-label="Sorted {SORT_SPOKEN[app.spaceSort]}. Sort {SORT_SPOKEN[NEXT_SORT[app.spaceSort]]}"
+              title={app.spaceSort === "custom" ? "Your own order: drag spaces, or Option+Up/Down" : "Drag a space to put them in your own order"}
+              onclick={() => app.setSpaceSort(NEXT_SORT[app.spaceSort], true)}>{SORT_LABEL[app.spaceSort]}</button
             >
           {/if}
         </div>
         {#if !app.collapsed[section.id]}
-          <ul class="m-0 mt-0.5 list-none p-0">
+          <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+          <ul
+            class="m-0 mt-0.5 list-none p-0"
+            ondragleave={(e) => {
+              if (!e.currentTarget.contains(e.relatedTarget as Node)) dropAt = null;
+            }}
+          >
             {#each section.items as s (s.name)}
               {@const active = s.name === app.current}
               {@const b = badge(s)}
-              <li>
+              {@const movable = section.id === "spaces"}
+              <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+              <li
+                class="group relative"
+                draggable={movable}
+                ondragstart={(e) => {
+                  if (!movable || !e.dataTransfer) return;
+                  dragging = s.name;
+                  e.dataTransfer.setData("text/x-kwek-space", s.name);
+                  e.dataTransfer.effectAllowed = "move";
+                }}
+                ondragover={(e) => movable && onDragOver(e, s)}
+                ondrop={(e) => movable && onDrop(e, section.items)}
+                ondragend={() => {
+                  dragging = null;
+                  dropAt = null;
+                }}
+              >
+                {#if dropAt?.name === s.name && dragging !== s.name}
+                  <span
+                    class={cn("pointer-events-none absolute inset-x-2 z-10 h-0.5 rounded-full bg-accent", dropAt.after ? "-bottom-px" : "-top-px")}
+                    aria-hidden="true"
+                  ></span>
+                {/if}
                 <button
                   data-space={s.name}
                   aria-current={active ? "page" : undefined}
-                  tabindex={s.name === focusName ? 0 : -1}
+                  aria-keyshortcuts={movable ? "Alt+ArrowUp Alt+ArrowDown" : undefined}
+                  tabindex={s.name === tabbable ? 0 : -1}
+                  onkeydown={(e) => onRowKeydown(e, s, section.id, section.items)}
                   onclick={() => void app.open(s.name)}
                   onfocus={() => {
                     app.zone = "sidebar";
@@ -118,6 +202,7 @@
                     active ? "bg-sidebar-active font-semibold" : "hover:bg-sidebar-hover",
                     s.muted && !active && "text-muted-foreground",
                     !s.muted && s.unread > 0 && "font-semibold",
+                    dragging === s.name && "opacity-50",
                   )}
                 >
                   {#if s.kind === "dm"}
@@ -142,6 +227,18 @@
                   {/if}
                   {#if unreadLabel(s)}<span class="sr-only">, {unreadLabel(s)}</span>{/if}
                 </button>
+                {#if section.id === "hidden"}
+                  <!-- A mouse shortcut; with the keyboard, open it and use Unhide in the header. -->
+                  <button
+                    class="absolute top-1 right-1 hidden size-6 place-items-center rounded-md bg-sidebar-hover text-muted-foreground group-hover:grid hover:text-foreground"
+                    tabindex="-1"
+                    aria-label="Show {s.displayName} in the sidebar again"
+                    title="Show in the sidebar again"
+                    onclick={() => void app.toggleHidden(s)}
+                  >
+                    <Eye class="size-3.5" aria-hidden="true" />
+                  </button>
+                {/if}
               </li>
             {/each}
           </ul>

@@ -18,6 +18,28 @@ import type { Block } from "./bindings/Block";
 import type { Inline } from "./bindings/Inline";
 
 export type Zone = "sidebar" | "messages" | "composer" | "thread" | "threadComposer";
+export type SpaceSort = "recent" | "az" | "custom";
+
+function loadSpaceSort(): SpaceSort {
+  try {
+    const v = localStorage.getItem("kwek.spaceSort");
+    if (v === "recent" || v === "az" || v === "custom") return v;
+  } catch {
+    // Private storage unavailable: start with the default.
+  }
+  return "recent";
+}
+
+/** `xs` arrive by recent activity. Custom: placed spaces by position, the rest after them
+ * by activity. */
+function sortSpaces(xs: SpaceSummary[], sort: SpaceSort): SpaceSummary[] {
+  if (sort === "az") return [...xs].sort((a, b) => a.displayName.localeCompare(b.displayName));
+  if (sort === "custom") {
+    const placed = xs.filter((s) => s.position !== null).sort((a, b) => a.position! - b.position!);
+    return [...placed, ...xs.filter((s) => s.position === null)];
+  }
+  return xs;
+}
 export type Overlay = null | "switcher" | "search" | "keys";
 
 const PAGE = 100;
@@ -69,25 +91,29 @@ class AppState {
   windowFocused = $state(true);
   /** Bumped to ask the active zone to take focus again (after a dialog closes). */
   focusNonce = $state(0);
-  collapsed = $state<Record<string, boolean>>({});
+  /** Collapsed sidebar sections; Hidden starts folded away. */
+  collapsed = $state<Record<string, boolean>>({ hidden: true });
   /** Window under 1000px: the thread panel overlays the channel. */
   narrow = $state(false);
-  alphabetical = $state(false);
+  /** How the Spaces section is sorted; remembered on this Mac. */
+  spaceSort = $state<SpaceSort>(loadSpaceSort());
 
   currentSpace = $derived(this.spaces.find((s) => s.name === this.current) ?? null);
   currentMessages = $derived(this.current ? (this.messages[this.current] ?? []) : []);
 
-  /** Sidebar order: Starred, Direct messages (DMs and group chats), Spaces; by activity. */
+  /** Sidebar order: Starred, Direct messages (DMs and group chats), Spaces, then Hidden.
+   * DMs by activity; Spaces by the chosen sort. */
   sections = $derived.by(() => {
-    const starred = this.spaces.filter((s) => s.starred);
-    const dms = this.spaces.filter((s) => !s.starred && s.kind !== "space");
-    const rooms = this.spaces.filter((s) => !s.starred && s.kind === "space");
-    const sortRooms = (xs: SpaceSummary[]) =>
-      this.alphabetical ? [...xs].sort((a, b) => a.displayName.localeCompare(b.displayName)) : xs;
+    const shown = this.spaces.filter((s) => !s.hidden);
+    const starred = shown.filter((s) => s.starred);
+    const dms = shown.filter((s) => !s.starred && s.kind !== "space");
+    const rooms = shown.filter((s) => !s.starred && s.kind === "space");
+    const hidden = [...this.spaces.filter((s) => s.hidden)].sort((a, b) => a.displayName.localeCompare(b.displayName));
     return [
       { id: "starred", title: "Starred", items: starred },
       { id: "dms", title: "Direct messages", items: dms },
-      { id: "spaces", title: "Spaces", items: sortRooms(rooms) },
+      { id: "spaces", title: "Spaces", items: sortSpaces(rooms, this.spaceSort) },
+      { id: "hidden", title: "Hidden", items: hidden },
     ].filter((s) => s.items.length > 0);
   });
   /** What the sidebar shows, in order: j/k walk exactly this. */
@@ -412,6 +438,51 @@ class AppState {
 
   async toggleMute(space: SpaceSummary) {
     await api.setSpacePrefs(space.name, { muted: !space.muted });
+  }
+
+  async toggleHidden(space: SpaceSummary) {
+    try {
+      await api.setSpacePrefs(space.name, { hidden: !space.hidden });
+      this.say(space.hidden ? `${space.displayName} is back in the sidebar.` : `${space.displayName} hidden. It's under Hidden at the bottom of the sidebar.`);
+    } catch (e) {
+      toast.error(errorText(e));
+    }
+  }
+
+  setSpaceSort(sort: SpaceSort, announce = false) {
+    this.spaceSort = sort;
+    if (announce) this.say(`Spaces sorted ${sort === "recent" ? "by recent activity" : sort === "az" ? "A to Z" : "in your own order"}.`);
+    try {
+      localStorage.setItem("kwek.spaceSort", sort);
+    } catch {
+      // Private storage unavailable: the choice lasts until restart.
+    }
+  }
+
+  /** Moves a space within the Spaces section to `to` (an index in its current order) and
+   * switches that section to the custom order. Returns where it ended up, or null when it
+   * didn't move (already there, or at the edge). */
+  async moveSpace(name: string, to: number): Promise<number | null> {
+    const rooms = this.sections.find((s) => s.id === "spaces")?.items ?? [];
+    const from = rooms.findIndex((s) => s.name === name);
+    if (from < 0) return null;
+    const target = Math.max(0, Math.min(rooms.length - 1, to));
+    if (target === from) return null;
+    const order = rooms.map((s) => s.name);
+    order.splice(target, 0, ...order.splice(from, 1));
+    // Show it at once; Rust confirms with the next spaces update. Everything outside this
+    // list loses its place, as Rust does.
+    const pos = new Map(order.map((n, i) => [n, i]));
+    this.spaces = this.spaces.map((s) => ({ ...s, position: pos.get(s.name) ?? null }));
+    this.setSpaceSort("custom");
+    try {
+      await api.setSpaceOrder(order);
+    } catch (e) {
+      toast.error(errorText(e));
+      // Back to what is saved.
+      this.spaces = await api.listSpaces().catch(() => this.spaces);
+    }
+    return target;
   }
 
   nextUnread(dir: 1 | -1) {

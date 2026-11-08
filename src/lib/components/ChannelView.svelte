@@ -7,6 +7,8 @@
   import Star from "@lucide/svelte/icons/star";
   import BellOff from "@lucide/svelte/icons/bell-off";
   import Bell from "@lucide/svelte/icons/bell";
+  import EyeOff from "@lucide/svelte/icons/eye-off";
+  import Eye from "@lucide/svelte/icons/eye";
   import External from "@lucide/svelte/icons/external-link";
   import Users from "@lucide/svelte/icons/users";
 
@@ -37,6 +39,14 @@
         </button>
         <button class="hdr" aria-pressed={s.muted} aria-label="Mute" title={s.muted ? "Unmute" : "Mute"} onclick={() => app.toggleMute(s)}>
           {#if s.muted}<BellOff />{:else}<Bell />{/if}
+        </button>
+        <button
+          class="hdr"
+          aria-label={s.hidden ? "Show in the sidebar again" : "Hide from the sidebar"}
+          title={s.hidden ? "Unhide: back in the sidebar" : "Hide: moves it under Hidden at the bottom of the sidebar"}
+          onclick={() => app.toggleHidden(s)}
+        >
+          {#if s.hidden}<Eye />{:else}<EyeOff />{/if}
         </button>
         {#if s.webUrl}
           <button class="hdr" aria-label="Open in Google Chat" title="Open in Google Chat" onclick={() => api.openUrl(s.webUrl!)}>

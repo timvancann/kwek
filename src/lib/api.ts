@@ -44,8 +44,15 @@ export const api = {
   search: (query: string, limit = 50, offset = 0) => invoke<SearchResult>("search", { query, limit, offset }),
   listMembers: (space: string) => invoke<UserRef[]>("list_members", { space }),
   listSenders: () => invoke<UserRef[]>("list_senders"),
-  setSpacePrefs: (space: string, prefs: { muted?: boolean; starred?: boolean }) =>
-    invoke<void>("set_space_prefs", { space, muted: prefs.muted ?? null, starred: prefs.starred ?? null }),
+  setSpacePrefs: (space: string, prefs: { muted?: boolean; starred?: boolean; hidden?: boolean }) =>
+    invoke<void>("set_space_prefs", {
+      space,
+      muted: prefs.muted ?? null,
+      starred: prefs.starred ?? null,
+      hidden: prefs.hidden ?? null,
+    }),
+  /** The user's own order for the Spaces section, top first. */
+  setSpaceOrder: (names: string[]) => invoke<void>("set_space_order", { names }),
   setOpen: (space: string | null, thread: string | null) => invoke<void>("set_open", { space, thread }),
   lastOwnMessage: (space: string, thread: string | null) =>
     invoke<MessageView | null>("last_own_message", { space, thread }),

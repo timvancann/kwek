@@ -41,6 +41,8 @@ pub struct SpaceRow {
     pub dm_peer: Option<String>,
     pub muted: bool,
     pub starred: bool,
+    pub hidden: bool,
+    pub position: Option<i64>,
     pub unread: i64,
     pub mentions: i64,
     pub last_read_us: Option<Micros>,
@@ -59,7 +61,7 @@ SELECT s.name, s.space_type, s.display_name, s.threaded, s.last_active_us, s.las
            AND r.last_read_us IS NOT NULL AND m.create_us > r.last_read_us),
        r.last_read_us,
        (SELECT max(create_us) FROM message m WHERE m.space = s.name AND m.local_state != 'ghost'),
-       s.low_water_us
+       s.low_water_us, s.hidden, s.position
 FROM space s LEFT JOIN space_read_state r ON r.space = s.name";
 
 fn space_row(r: &Row) -> rusqlite::Result<SpaceRow> {
@@ -81,6 +83,8 @@ fn space_row(r: &Row) -> rusqlite::Result<SpaceRow> {
         last_read_us: r.get(14)?,
         newest_us: r.get(15)?,
         low_water_us: r.get(16)?,
+        hidden: r.get(17)?,
+        position: r.get(18)?,
     })
 }
 

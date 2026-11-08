@@ -341,13 +341,35 @@ pub fn set_dm_peer(c: &Connection, space: &str, peer: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn set_space_prefs(c: &Connection, space: &str, muted: Option<bool>, starred: Option<bool>) -> Result<()> {
+pub fn set_space_prefs(
+    c: &Connection,
+    space: &str,
+    muted: Option<bool>,
+    starred: Option<bool>,
+    hidden: Option<bool>,
+) -> Result<()> {
     if let Some(m) = muted {
         c.execute("UPDATE space SET muted = ?2 WHERE name = ?1", params![space, m])?;
     }
     if let Some(s) = starred {
         c.execute("UPDATE space SET starred = ?2 WHERE name = ?1", params![space, s])?;
     }
+    if let Some(h) = hidden {
+        c.execute("UPDATE space SET hidden = ?2 WHERE name = ?1", params![space, h])?;
+    }
+    Ok(())
+}
+
+/// The user's order for the Spaces section: `names` get positions 0, 1, 2, ... Every other
+/// space loses its place, so no old position can tie with a new one; a starred or hidden
+/// space that comes back joins the unplaced ones after the ordered list.
+pub fn set_space_order(c: &mut Connection, names: &[String]) -> Result<()> {
+    let tx = c.transaction()?;
+    tx.execute("UPDATE space SET position = NULL WHERE position IS NOT NULL", [])?;
+    for (i, n) in names.iter().enumerate() {
+        tx.execute("UPDATE space SET position = ?2 WHERE name = ?1", params![n, i as i64])?;
+    }
+    tx.commit()?;
     Ok(())
 }
 

@@ -4,7 +4,15 @@ export type SpaceSummary = { name: string,
 /**
  * `space`, `dm` or `group`.
  */
-kind: string, displayName: string, avatarUrl: string | null, unread: number, mentions: number, muted: boolean, starred: boolean, lastActiveUs: number, lastReadUs: number | null, threaded: boolean, memberCount: number | null, webUrl: string | null, historyComplete: boolean, 
+kind: string, displayName: string, avatarUrl: string | null, unread: number, mentions: number, muted: boolean, starred: boolean, 
+/**
+ * Kept out of the sidebar's main sections; shown under Hidden.
+ */
+hidden: boolean, 
+/**
+ * Place in the user's own order for the Spaces section; None when never placed.
+ */
+position: number | null, lastActiveUs: number, lastReadUs: number | null, threaded: boolean, memberCount: number | null, webUrl: string | null, historyComplete: boolean, 
 /**
  * Cached history is contiguous from here to now; older cached rows may have gaps.
  */

@@ -246,6 +246,7 @@ pub fn run() {
             commands::list_members,
             commands::list_senders,
             commands::set_space_prefs,
+            commands::set_space_order,
             commands::set_open,
             commands::last_own_message,
             commands::open_url,

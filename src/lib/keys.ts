@@ -29,7 +29,9 @@ function move(dir: 1 | -1) {
   if (app.zone === "sidebar") {
     const order = app.sidebarOrder;
     if (order.length === 0) return;
-    const at = order.findIndex((s) => s.name === (app.sidebarFocus ?? app.current));
+    // The highlight may sit in a collapsed section (Hidden): then step from the open one.
+    let at = order.findIndex((s) => s.name === app.sidebarFocus);
+    if (at < 0) at = order.findIndex((s) => s.name === app.current);
     const next = at < 0 ? 0 : Math.min(order.length - 1, Math.max(0, at + dir));
     app.sidebarFocus = order[next].name;
     return;
