@@ -13,7 +13,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::chat::{Membership, Message, Reaction, Space, SpaceReadState, ThreadReadState};
-use crate::config::{GCP_PROJECT, PUBSUB_TOPIC};
+use crate::config::{GoogleSetup, SharedSetup};
 use crate::error::{Error, Result};
 use crate::google::{Google, q};
 
@@ -48,10 +48,6 @@ pub const USER_EVENT_TYPES: &[&str] = &[
 pub fn user_target(user: &str) -> String {
     let id = user.trim_start_matches("users/");
     format!("//cloudidentity.googleapis.com/users/{id}")
-}
-
-pub fn device_subscription(device_id: &str) -> String {
-    format!("projects/{GCP_PROJECT}/subscriptions/chat-events-{device_id}")
 }
 
 /// What an event means for local state. Events are short-lived (decoded, applied, dropped),
@@ -280,19 +276,30 @@ pub struct Subscription {
 
 pub struct EventsClient {
     g: Google,
+    setup: SharedSetup,
 }
 
 impl EventsClient {
-    pub fn new(g: Google) -> Self {
-        Self { g }
+    pub fn new(g: Google, setup: SharedSetup) -> Self {
+        Self { g, setup }
+    }
+
+    fn setup(&self) -> Result<GoogleSetup> {
+        crate::config::current(&self.setup).ok_or(Error::NoOAuthClient)
+    }
+
+    /// This device's pull subscription on the user's topic.
+    pub fn device_subscription(&self, device_id: &str) -> Result<String> {
+        Ok(self.setup()?.subscription(device_id))
     }
 
     /// Creates the device's pull subscription if missing. Unused subscriptions expire after
     /// 7 days, so a device that disappears cleans up after itself.
     pub async fn ensure_pubsub(&self, device_id: &str) -> Result<String> {
-        let name = device_subscription(device_id);
+        let setup = self.setup()?;
+        let name = setup.subscription(device_id);
         let body = json!({
-            "topic": PUBSUB_TOPIC,
+            "topic": setup.topic_path(),
             "ackDeadlineSeconds": 60,
             "expirationPolicy": { "ttl": "604800s" },
             "messageRetentionDuration": "86400s",
@@ -307,7 +314,7 @@ impl EventsClient {
     pub async fn delete_pubsub(&self, device_id: &str) -> Result<()> {
         match self
             .g
-            .delete(&format!("{PUBSUB}/{}", device_subscription(device_id)))
+            .delete(&format!("{PUBSUB}/{}", self.device_subscription(device_id)?))
             .await
         {
             Err(e) if e.is_status("NOT_FOUND") => Ok(()),
@@ -378,7 +385,7 @@ impl EventsClient {
         let mut body = json!({
             "targetResource": target,
             "eventTypes": event_types,
-            "notificationEndpoint": { "pubsubTopic": PUBSUB_TOPIC },
+            "notificationEndpoint": { "pubsubTopic": self.setup()?.topic_path() },
             "payloadOptions": { "includeResource": include_resource },
         });
         if include_resource {

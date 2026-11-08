@@ -3,6 +3,6 @@
 export type SyncStatus = { 
 /**
  * `starting`, `bootstrapping`, `live`, `polling`, `reconciling`, `offline`,
- * `authRequired`, `error`.
+ * `authRequired`, `needsSetup` (signed in, but no Google client to use), `error`.
  */
 state: string, detail: string | null, };

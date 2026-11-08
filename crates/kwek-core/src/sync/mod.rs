@@ -272,6 +272,14 @@ impl Engine {
                     self.set_status("authRequired", None);
                     continue;
                 }
+                // Signed in, but this copy of kwek has no Google client (a release build
+                // replacing one with a client baked in). Retrying cannot help: wait for the
+                // user to give kwek their client file.
+                Err(Error::NoOAuthClient) => {
+                    self.set_status("needsSetup", None);
+                    self.wake.notified().await;
+                    continue;
+                }
                 Err(e) => {
                     let offline = e.is_offline();
                     tracing::warn!("sync session ended: {e}");

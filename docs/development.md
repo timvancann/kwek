@@ -6,7 +6,9 @@ Tauri 2 + Svelte 5. Rust owns all I/O (`crates/kwek-core` has no Tauri dependenc
 
 `just install` builds `kwek.app` into `~/Applications`; `just bundle` only builds it; `just run` runs from source with hot reload. The app is unsigned, which is fine on the Mac that built it.
 
-The build bakes in your OAuth client and its project from `secrets/oauth-client.json` (gitignored). `KWEK_OAUTH_CLIENT_ID`, `KWEK_OAUTH_CLIENT_SECRET`, `KWEK_GCP_PROJECT` and `KWEK_PUBSUB_TOPIC` (default `chat-events`) override it.
+Without anything extra, kwek asks for the user's client file on first start and keeps its details in the data folder (`google-client.json`). With your client file saved as `secrets/oauth-client.json` (gitignored), the build bakes it in instead and skips that step, which suits development. `KWEK_OAUTH_CLIENT_ID`, `KWEK_OAUTH_CLIENT_SECRET`, `KWEK_GCP_PROJECT` and `KWEK_PUBSUB_TOPIC` (default `chat-events`) override the file. A client file given in the app wins over the baked-in one.
+
+Releases: [releasing.md](releasing.md).
 
 Related search uses [multilingual-e5-small](https://huggingface.co/intfloat/multilingual-e5-small) (int8, about 135 MB), bundled with the app and run on-device with [fastembed](https://github.com/Anush008/fastembed-rs). `just model` fetches it into `models/` (pinned revision, checksummed); `just run` and `just bundle` do that for you.
 

@@ -146,7 +146,20 @@ pub async fn refresh(http: &reqwest::Client, client: &OAuthClient, refresh_token
         ])
         .send()
         .await?;
-    token_result(resp).await
+    refresh_result(token_result(resp).await)
+}
+
+/// A refresh token only works with the client it was issued to. Google says
+/// `unauthorized_client` when the client changed (the user gave kwek a different client
+/// file): like an expired sign-in, the only way on is to sign in again.
+fn refresh_result(r: Result<TokenResponse>) -> Result<TokenResponse> {
+    match r {
+        Err(Error::Api {
+            status_code: Some(code),
+            ..
+        }) if code == "unauthorized_client" => Err(Error::AuthRequired),
+        r => r,
+    }
 }
 
 pub async fn revoke(http: &reqwest::Client, token: &str) -> Result<()> {
@@ -191,6 +204,23 @@ mod tests {
             pkce_challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
             "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
         );
+    }
+
+    #[test]
+    fn a_token_for_another_client_means_signing_in_again() {
+        let api = |code: &str| Error::Api {
+            status: 401,
+            status_code: Some(code.into()),
+            message: String::new(),
+        };
+        assert!(matches!(
+            refresh_result(Err(api("unauthorized_client"))),
+            Err(Error::AuthRequired)
+        ));
+        assert!(matches!(
+            refresh_result(Err(api("invalid_client"))),
+            Err(Error::Api { .. })
+        ));
     }
 
     #[test]

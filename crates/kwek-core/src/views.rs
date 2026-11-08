@@ -109,6 +109,16 @@ pub struct MessageView {
     pub web_url: Option<String>,
 }
 
+/// The Google Cloud setup kwek signs in with, for the sign-in screen.
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct GoogleSetupView {
+    pub project: String,
+    /// Baked into this build rather than given by the user.
+    pub built_in: bool,
+}
+
 #[derive(Debug, Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase", tag = "state")]
 #[ts(export)]
@@ -127,7 +137,7 @@ pub enum AuthState {
 #[ts(export)]
 pub struct SyncStatus {
     /// `starting`, `bootstrapping`, `live`, `polling`, `reconciling`, `offline`,
-    /// `authRequired`, `error`.
+    /// `authRequired`, `needsSetup` (signed in, but no Google client to use), `error`.
     pub state: String,
     pub detail: Option<String>,
 }

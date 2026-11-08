@@ -8,8 +8,9 @@ pub enum Error {
     #[error("sign-in required")]
     AuthRequired,
 
-    /// The OAuth client was not baked in at build time.
-    #[error("OAuth client not configured: put the desktop client JSON in secrets/oauth-client.json and rebuild")]
+    /// No Google setup yet: the user has not given kwek their client file, and the build
+    /// carries none.
+    #[error("no Google client configured: give kwek your desktop client file (docs/setup.md)")]
     NoOAuthClient,
 
     /// Google answered with a non-success status. `status_code` is Google's

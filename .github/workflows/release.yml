@@ -1,0 +1,121 @@
+name: Release
+
+# Push a tag like v0.2.0 (the version in Cargo.toml, package.json and tauri.conf.json) and
+# this builds kwek.app for Apple silicon and publishes it as a GitHub release. (Not Intel:
+# ONNX Runtime, behind related search, has no prebuilt library for Intel Macs.) The build carries no Google client: each user gives kwek their own on first
+# launch (docs/setup.md). With the signing secrets set (docs/releasing.md) the app is
+# signed and notarized, so it opens like any other; without them it is only ad-hoc signed
+# and macOS asks once before opening it.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-latest
+    env:
+      # The oldest macOS kwek runs on, as tauri.conf.json's minimumSystemVersion says.
+      MACOSX_DEPLOYMENT_TARGET: "13.0"
+    # Actions pinned to commits and no build cache: this job holds the signing secrets,
+    # so nothing in it may change under it.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: The tag matches the version everywhere
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          cargo="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          npm="$(jq -r .version package.json)"
+          tauri="$(jq -r .version src-tauri/tauri.conf.json)"
+          for v in "$cargo" "$npm" "$tauri"; do
+            if [ "$version" != "$v" ]; then
+              echo "::error::tag $GITHUB_REF_NAME but Cargo.toml says $cargo, package.json $npm, tauri.conf.json $tauri"
+              exit 1
+            fi
+          done
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          targets: aarch64-apple-darwin
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        with:
+          version: 11
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: lts/*
+      - uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
+        with:
+          tool: just
+
+      - run: just model
+      - run: pnpm install --frozen-lockfile
+      - run: cargo test -p kwek-core
+
+      - name: Build for Apple silicon
+        run: pnpm tauri build --target aarch64-apple-darwin
+
+      - name: Sign and notarize
+        env:
+          CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          app=target/aarch64-apple-darwin/release/bundle/macos/kwek.app
+          echo "APP=$app" >> "$GITHUB_ENV"
+          if [ -z "$CERTIFICATE" ]; then
+            echo "::warning::No signing secrets: the release is ad-hoc signed only. See docs/releasing.md."
+            codesign --force --sign - "$app"
+            codesign --verify --strict --verbose=2 "$app"
+            echo "SIGNED=no" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          keychain_password="$(openssl rand -base64 24)"
+          echo "$CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" \
+            -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          # Apple's Developer ID intermediate, so the chain is whole on a fresh runner.
+          curl -fsSL -o "$RUNNER_TEMP/DeveloperIDG2CA.cer" \
+            https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer
+          security import "$RUNNER_TEMP/DeveloperIDG2CA.cer" -k "$keychain"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain"
+          # Ours first, then the ones already there (one word each, so unquoted).
+          # shellcheck disable=SC2046
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+
+          codesign --force --options runtime --timestamp --sign "$SIGNING_IDENTITY" "$app"
+          codesign --verify --strict --verbose=2 "$app"
+
+          ditto -c -k --keepParent "$app" "$RUNNER_TEMP/notarize.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" --wait \
+            --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD"
+          xcrun stapler staple "$app"
+          echo "SIGNED=yes" >> "$GITHUB_ENV"
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          zip="kwek-$VERSION.zip"
+          ditto -c -k --keepParent "$APP" "$zip"
+          setup="kwek works with your own Google Cloud project: before the first launch, follow the setup guide (https://github.com/$GITHUB_REPOSITORY/blob/main/docs/setup.md) and keep the client file it ends with. kwek asks for it on first start."
+          if [ "$SIGNED" = yes ]; then
+            open_it="For Macs with Apple silicon, macOS 13 or later. Download $zip, unzip it and drag kwek into Applications."
+          else
+            open_it="For Macs with Apple silicon, macOS 13 or later. Download $zip, unzip it and drag kwek into Applications. This build isn't notarized by Apple, so macOS blocks it the first time: open it once, then go to System Settings, Privacy & Security, and click Open Anyway. Or run \`xattr -dr com.apple.quarantine /Applications/kwek.app\` in Terminal."
+          fi
+          printf '%s\n\n%s\n' "$open_it" "$setup" > "$RUNNER_TEMP/notes.md"
+          gh release create "$GITHUB_REF_NAME" "$zip" --title "kwek $VERSION" \
+            --notes-file "$RUNNER_TEMP/notes.md" --generate-notes

@@ -16,7 +16,7 @@ gcloud pubsub topics add-iam-policy-binding chat-events --project=$P \
   --member=serviceAccount:chat-api-push@system.gserviceaccount.com --role=roles/pubsub.publisher
 ```
 
-The topic carries live events (new messages, edits, reactions, read state) to the app. A different topic name works too: build with `KWEK_PUBSUB_TOPIC=<name>`.
+The topic carries live events (new messages, edits, reactions, read state) to the app. Keep the name `chat-events`: the downloaded app looks for it. (A build of your own can use another name, with `KWEK_PUBSUB_TOPIC=<name>`.)
 
 ### If the publisher grant is refused
 
@@ -46,7 +46,7 @@ In https://console.cloud.google.com with your project selected, open **Google Au
    - `https://www.googleapis.com/auth/pubsub`
    - `https://www.googleapis.com/auth/directory.readonly`
    - `https://www.googleapis.com/auth/userinfo.profile` and `userinfo.email` (who is signed in; Internal apps may request them without listing them)
-4. **Clients**: create client, type **Desktop app**, name `kwek desktop`. Download the JSON and save it as `secrets/oauth-client.json` in your checkout. That folder is gitignored. The build reads the client and its project from it.
+4. **Clients**: create client, type **Desktop app**, name `kwek desktop`. Download the JSON and keep it: kwek asks for this client file on first launch.
 
 ## 3. Chat app configuration (console)
 
@@ -57,8 +57,10 @@ APIs & Services, Google Chat API, **Configuration** tab. Live events are refused
 - Visibility: specific people, the accounts that will use kwek.
 - Save.
 
-## 4. Build and sign in
+## 4. Start kwek
 
-`just install` builds the app into `~/Applications`. Open it and press **Connect to Google**; that opens a browser tab once to sign in.
+Open kwek, choose the client file from step 2 (or paste its contents), and press **Connect to Google**; that opens a browser tab once to sign in. kwek keeps the client file's details in its data folder, so this happens once.
+
+Building kwek yourself with the file saved as `secrets/oauth-client.json` in your checkout bakes it into the app instead, and the first step is skipped (see `development.md`).
 
 Everyone who uses kwek from the same project shares the one topic. kwek drops events that are not for the signed-in user, but they still reach each device's subscription, so for more than one user, give each their own project or topic (see `api-findings.md`).

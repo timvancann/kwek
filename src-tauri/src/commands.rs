@@ -1,9 +1,12 @@
 //! IPC commands: request/response against local state. Errors cross as plain sentences the
 //! UI can show in a toast.
 
+use std::sync::PoisonError;
+
 use kwek_core::Error;
+use kwek_core::config::GoogleSetup;
 use kwek_core::sync::Engine;
-use kwek_core::views::{AuthState, MessageView, SearchResult, SpaceSummary, SyncStatus, UserRef};
+use kwek_core::views::{AuthState, GoogleSetupView, MessageView, SearchResult, SpaceSummary, SyncStatus, UserRef};
 use tauri::{AppHandle, State};
 use tauri_plugin_opener::OpenerExt;
 
@@ -16,7 +19,7 @@ fn msg(e: Error) -> String {
     tracing::warn!("command failed: {e}");
     match e {
         Error::AuthRequired => "Sign in to Google again to continue.".into(),
-        Error::NoOAuthClient => "This build has no Google client configured.".into(),
+        Error::NoOAuthClient => "Give kwek your Google client file first.".into(),
         Error::Network(_) | Error::Timeout => "No connection. Try again when you are back online.".into(),
         Error::Api { message, .. } if message.contains("Chat app not found") => {
             "Google Chat refuses this until the kwek Chat app is configured (docs/setup.md, step 3).".into()
@@ -45,6 +48,46 @@ async fn blocking<T: Send + 'static>(
 #[tauri::command]
 pub async fn auth_status(state: State<'_, AppState>) -> Res<AuthState> {
     blocking(&state, |e| Ok(e.auth_state())).await
+}
+
+fn setup_view(s: &GoogleSetup) -> GoogleSetupView {
+    GoogleSetupView {
+        project: s.project.clone(),
+        built_in: GoogleSetup::built_in().as_ref() == Some(s),
+    }
+}
+
+#[tauri::command]
+pub fn google_setup(state: State<'_, AppState>) -> Option<GoogleSetupView> {
+    state
+        .setup
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_ref()
+        .map(setup_view)
+}
+
+/// `json` is the client file the Cloud console downloads. While signed out, or while signed
+/// in without any setup (the session is stuck until it gets one); not to switch the project
+/// under a working session, which belongs to the client it signed in with.
+#[tauri::command]
+pub async fn set_google_setup(state: State<'_, AppState>, json: String) -> Res<GoogleSetupView> {
+    let (shared, dir) = (state.setup.clone(), state.data_dir.clone());
+    blocking(&state, move |e| {
+        let missing = shared.read().unwrap_or_else(PoisonError::into_inner).is_none();
+        if !missing && !matches!(e.auth_state(), AuthState::SignedOut) {
+            return Err(Error::Other("Sign out first to switch Google projects.".into()));
+        }
+        let setup = GoogleSetup::from_client_json(&json)?;
+        setup.save(&dir)?;
+        let view = setup_view(&setup);
+        tracing::info!(project = %setup.project, "Google setup saved");
+        *shared.write().unwrap_or_else(PoisonError::into_inner) = Some(setup);
+        // A session waiting for a client goes on now.
+        e.poke();
+        Ok(view)
+    })
+    .await
 }
 
 #[tauri::command]

@@ -29,7 +29,8 @@
 
 {#if !app.ready}
   <div class="h-full bg-sidebar" data-tauri-drag-region></div>
-{:else if app.auth.state !== "signedIn"}
+{:else if app.auth.state !== "signedIn" || app.status.state === "needsSetup"}
+  <!-- Signed in but without a Google client (needsSetup): the setup step asks for it. -->
   <Login />
 {:else}
   <div class="relative flex h-full">

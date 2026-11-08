@@ -10,15 +10,15 @@ jobs:
     runs-on: macos-latest
     # The same checks as before a commit locally (docs/development.md).
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 11
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: lts/*
           cache: pnpm
@@ -26,7 +26,7 @@ jobs:
 
       # The search model is bundled as a Tauri resource, so the app crate needs it to
       # compile. Cached on its checksums; `just model` verifies whatever it finds.
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: models/multilingual-e5-small
           key: model-${{ hashFiles('models/*.sha256') }}

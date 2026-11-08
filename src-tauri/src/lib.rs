@@ -5,10 +5,11 @@ mod commands;
 mod notify;
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use kwek_core::auth::{TokenManager, default_store};
 use kwek_core::chat::HttpChat;
+use kwek_core::config::{GoogleSetup, SharedSetup};
 use kwek_core::db::Db;
 use kwek_core::events::EventsClient;
 use kwek_core::google::Google;
@@ -23,6 +24,8 @@ use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 pub struct AppState {
     pub engine: Arc<Engine>,
     pub media_dir: PathBuf,
+    pub data_dir: PathBuf,
+    pub setup: SharedSetup,
     _log_guard: tracing_appender::non_blocking::WorkerGuard,
 }
 
@@ -128,11 +131,9 @@ pub fn run() {
 
             let db = Db::open(&data_dir.join("kwek.db"))?;
             let http = kwek_core::http_client();
-            let tokens = Arc::new(TokenManager::new(
-                http.clone(),
-                kwek_core::config::oauth_client().ok(),
-                default_store(&data_dir),
-            ));
+            // The user's Google setup (given on the sign-in screen), else the build's own.
+            let setup: SharedSetup = Arc::new(RwLock::new(GoogleSetup::load(&data_dir)));
+            let tokens = Arc::new(TokenManager::new(http.clone(), setup.clone(), default_store(&data_dir)));
             let g = Google::new(http.clone(), tokens.clone());
             let sink = Arc::new(TauriSink {
                 app: app.handle().clone(),
@@ -147,7 +148,7 @@ pub fn run() {
                 db,
                 Arc::new(HttpChat::new(g.clone())),
                 Arc::new(HttpPeople::new(g.clone())),
-                Some(EventsClient::new(g)),
+                Some(EventsClient::new(g, setup.clone())),
                 Some(tokens),
                 sink,
                 Some(media_dir.clone()),
@@ -159,6 +160,8 @@ pub fn run() {
             app.manage(AppState {
                 engine,
                 media_dir,
+                data_dir,
+                setup,
                 _log_guard: guard,
             });
             tracing::info!("kwek started");
@@ -179,6 +182,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::auth_status,
+            commands::google_setup,
+            commands::set_google_setup,
             commands::login,
             commands::logout,
             commands::sync_status,

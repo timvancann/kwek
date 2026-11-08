@@ -35,7 +35,16 @@ A fast, keyboard-first Google Chat client for macOS. *Kwek* is Dutch for roughly
 
 kwek needs a Google Workspace account (the Chat API doesn't serve personal Gmail) and
 your own small Google Cloud setup, done once in about 15 minutes:
-[docs/setup.md](docs/setup.md). Then, with [Rust](https://rustup.rs), Node with
+[docs/setup.md](docs/setup.md). It ends with a client file that kwek asks for on first
+start.
+
+Download the latest `kwek-<version>.zip` from
+[Releases](https://github.com/timvancann/kwek/releases), unzip it and drag kwek into
+Applications. It runs on macOS 13 or later, on Apple silicon. If macOS says it can't
+check the app, open it once, then click Open Anyway in System Settings, Privacy &
+Security.
+
+Or build it yourself, with [Rust](https://rustup.rs), Node with
 [pnpm](https://pnpm.io) and [just](https://github.com/casey/just):
 
 ```sh
@@ -43,9 +52,8 @@ just run       # run from source
 just install   # build kwek.app into ~/Applications
 ```
 
-Open kwek and press Connect to Google. Its cache, logs and settings live in
-`~/Library/Application Support/nl.timvancann.kwek/` and
-`~/Library/Logs/nl.timvancann.kwek/`. Building and contributing:
+Its cache, logs and settings live in `~/Library/Application Support/nl.timvancann.kwek/`
+and `~/Library/Logs/nl.timvancann.kwek/`. Building and contributing:
 [docs/development.md](docs/development.md).
 
 ## Inspiration
@@ -85,8 +93,10 @@ kwek stands on these projects:
   values; then it needs checking screen by screen.
 - **Attachments.** Paste or drop a file to send it. Today kwek only shows and downloads
   them.
-- **A download.** One signed build that works with anyone's Google project, set up in
-  the app instead of baked in at build time.
+- **Team builds.** One build your colleagues can open without a client file of their
+  own, with a topic per person so nobody's messages pass through anyone else's
+  subscription.
+- **Signed and notarized releases,** so macOS opens kwek without asking.
 
 ## Licence
 

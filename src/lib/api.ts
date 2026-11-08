@@ -3,15 +3,18 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { AuthState } from "./bindings/AuthState";
+import type { GoogleSetupView } from "./bindings/GoogleSetupView";
 import type { MessageView } from "./bindings/MessageView";
 import type { SearchResult } from "./bindings/SearchResult";
 import type { SpaceSummary } from "./bindings/SpaceSummary";
 import type { SyncStatus } from "./bindings/SyncStatus";
 import type { UserRef } from "./bindings/UserRef";
 
-export type { AuthState, MessageView, SearchResult, SpaceSummary, SyncStatus, UserRef };
+export type { AuthState, GoogleSetupView, MessageView, SearchResult, SpaceSummary, SyncStatus, UserRef };
 
 export const api = {
+  googleSetup: () => invoke<GoogleSetupView | null>("google_setup"),
+  setGoogleSetup: (json: string) => invoke<GoogleSetupView>("set_google_setup", { json }),
   authStatus: () => invoke<AuthState>("auth_status"),
   login: () => invoke<void>("login"),
   logout: () => invoke<void>("logout"),

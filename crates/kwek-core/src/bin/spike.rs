@@ -45,11 +45,12 @@ async fn main() -> anyhow::Result<()> {
     let http = http_client();
     let data = default_data_dir();
     let store = Box::new(FileStore::new(data.join("dev-refresh-token")));
-    let tokens = Arc::new(TokenManager::new(http.clone(), config::oauth_client().ok(), store));
+    let setup: config::SharedSetup = Arc::new(std::sync::RwLock::new(config::GoogleSetup::load(&data)));
+    let tokens = Arc::new(TokenManager::new(http.clone(), setup.clone(), store));
     let g = Google::new(http.clone(), tokens.clone());
     let chat = HttpChat::new(g.clone());
     let people = HttpPeople::new(g.clone());
-    let events = EventsClient::new(g.clone());
+    let events = EventsClient::new(g.clone(), setup);
 
     match cmd {
         "login" => {
@@ -255,7 +256,7 @@ async fn main() -> anyhow::Result<()> {
         }
         "pull" => {
             let secs: u64 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(60);
-            let sub = kwek_core::events::device_subscription("spike");
+            let sub = events.device_subscription("spike")?;
             let until = std::time::Instant::now() + std::time::Duration::from_secs(secs);
             let mut i = 0;
             while std::time::Instant::now() < until {

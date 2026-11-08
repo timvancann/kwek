@@ -9,7 +9,7 @@ use tokio::sync::Mutex;
 
 pub use store::{FileStore, KeychainStore, TokenStore, default_store};
 
-use crate::config::OAuthClient;
+use crate::config::{OAuthClient, SharedSetup, current_client};
 use crate::error::{Error, Result};
 
 struct Access {
@@ -19,23 +19,24 @@ struct Access {
 
 pub struct TokenManager {
     http: reqwest::Client,
-    client: Option<OAuthClient>,
+    /// The user's Google setup; it can arrive after start-up, from the sign-in screen.
+    setup: SharedSetup,
     store: Box<dyn TokenStore>,
     access: Mutex<Option<Access>>,
 }
 
 impl TokenManager {
-    pub fn new(http: reqwest::Client, client: Option<OAuthClient>, store: Box<dyn TokenStore>) -> Self {
+    pub fn new(http: reqwest::Client, setup: SharedSetup, store: Box<dyn TokenStore>) -> Self {
         Self {
             http,
-            client,
+            setup,
             store,
             access: Mutex::new(None),
         }
     }
 
-    fn client(&self) -> Result<&OAuthClient> {
-        self.client.as_ref().ok_or(Error::NoOAuthClient)
+    fn client(&self) -> Result<OAuthClient> {
+        current_client(&self.setup)
     }
 
     pub fn has_refresh_token(&self) -> bool {
@@ -44,7 +45,7 @@ impl TokenManager {
 
     /// Browser sign-in; stores the refresh token on success.
     pub async fn login(&self, open: impl FnOnce(&str) -> Result<()>) -> Result<()> {
-        let client = self.client()?.clone();
+        let client = self.client()?;
         let tok = flow::login(&self.http, &client, open).await?;
         let refresh = tok
             .refresh_token
@@ -66,7 +67,7 @@ impl TokenManager {
             return Ok(a.token.clone());
         }
         let refresh = self.store.load()?.ok_or(Error::AuthRequired)?;
-        match flow::refresh(&self.http, self.client()?, &refresh).await {
+        match flow::refresh(&self.http, &self.client()?, &refresh).await {
             Ok(tok) => {
                 if let Some(r) = tok.refresh_token.as_deref() {
                     self.store.save(r)?;
