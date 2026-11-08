@@ -370,12 +370,15 @@
         {#if hasFilter}<p class="m-0 text-[13px]">Try removing a filter.</p>{/if}
       </div>
     {:else if !full.trim()}
-      <div class="space-y-1.5 px-4 py-4 text-[13px] text-muted-foreground">
-        <p class="m-0">Type a few words you remember. They don't have to be in the same message.</p>
-        <p class="m-0">
-          Narrow it down: type <code class="font-mono text-[12px]">from:</code> or <code class="font-mono text-[12px]">in:</code> and pick a
-          name, or add <code class="font-mono text-[12px]">before:2026-11-01</code> or <code class="font-mono text-[12px]">after:2026-10-01</code>.
-        </p>
+      <div class="px-4 pt-4 pb-5 text-[14px] leading-relaxed text-muted-foreground">
+        <p class="m-0 text-foreground">Type a few words you remember, even if they were in different messages.</p>
+        <p id="search-narrow" class="m-0 mt-4 mb-2 text-[12px] font-semibold tracking-wide text-muted-foreground uppercase">Narrow it down</p>
+        <dl aria-labelledby="search-narrow" class="m-0 grid grid-cols-[max-content_1fr] items-center gap-x-4 gap-y-2">
+          {#each [["from:", "a person, picked from a list"], ["in:", "a conversation, picked from a list"], ["before:", "a date, like 2026-11-01"], ["after:", "a date, like 2026-10-01"]] as [key, what] (key)}
+            <dt><code class="rounded-md border border-border bg-muted px-2 py-0.5 font-mono text-[13px] text-foreground">{key}</code></dt>
+            <dd class="m-0">{what}</dd>
+          {/each}
+        </dl>
       </div>
     {/if}
     <div
