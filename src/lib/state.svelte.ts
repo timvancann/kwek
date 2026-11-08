@@ -63,6 +63,8 @@ class AppState {
   confirmDelete = $state<MessageView | null>(null);
   confirmSignOut = $state(false);
   reactTo = $state<MessageView | null>(null);
+  /** The image viewer: a message's images, opened at `index` (among its images). */
+  viewing = $state<{ message: MessageView; index: number; from?: HTMLElement } | null>(null);
   announce = $state("");
   windowFocused = $state(true);
   /** Bumped to ask the active zone to take focus again (after a dialog closes). */

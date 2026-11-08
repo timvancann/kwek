@@ -166,16 +166,18 @@ function isEditable(t: EventTarget | null): boolean {
 export function handleKey(e: KeyboardEvent): boolean {
   if (e.key === "k" && e.metaKey && !e.shiftKey && !e.altKey) {
     e.preventDefault();
+    app.viewing = null; // one modal at a time
     app.overlay = app.overlay === "switcher" ? null : "switcher";
     return true;
   }
   if (e.key === "f" && e.metaKey && !e.shiftKey && !e.altKey) {
     e.preventDefault();
+    app.viewing = null;
     app.overlay = app.overlay === "search" ? null : "search";
     return true;
   }
   // Dialogs and overlays own the keyboard while open.
-  if (app.overlay || app.confirmDelete || app.reactTo || app.confirmSignOut) return false;
+  if (app.overlay || app.confirmDelete || app.reactTo || app.confirmSignOut || app.viewing) return false;
   // Ctrl+H/L only outside text fields: there Ctrl+H is macOS delete-backward.
   if (e.ctrlKey && !e.metaKey && (e.key === "h" || e.key === "l") && !isEditable(e.target)) {
     e.preventDefault();

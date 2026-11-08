@@ -141,9 +141,12 @@
             {#if a.kind === "image" && a.mediaUrl}
               <button
                 tabindex={inner}
-                class="block overflow-hidden rounded-md border border-border"
-                onclick={() => a.resource && download(a.resource, a.name)}
-                aria-label="Image {a.name}, save to Downloads"
+                class="block cursor-zoom-in overflow-hidden rounded-md border border-border"
+                onclick={(e) => {
+                  const images = m.attachments.filter((x) => x.kind === "image" && x.mediaUrl);
+                  app.viewing = { message: m, index: Math.max(0, images.indexOf(a)), from: e.currentTarget };
+                }}
+                aria-label="Image {a.name}, open larger"
               >
                 <img src={a.mediaUrl} alt={a.name} loading="lazy" class="block max-h-72 max-w-[min(360px,100%)] object-contain" draggable="false" />
               </button>

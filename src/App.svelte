@@ -6,6 +6,7 @@
   import Login from "$lib/components/Login.svelte";
   import QuickSwitcher from "$lib/components/QuickSwitcher.svelte";
   import SearchOverlay from "$lib/components/SearchOverlay.svelte";
+  import ImageViewer from "$lib/components/ImageViewer.svelte";
   import Sidebar from "$lib/components/Sidebar.svelte";
   import ThreadPanel from "$lib/components/ThreadPanel.svelte";
   import { handleKey } from "$lib/keys";
@@ -55,6 +56,7 @@
   </div>
   <QuickSwitcher />
   <SearchOverlay />
+  <ImageViewer />
   <Dialogs />
 {/if}
 
