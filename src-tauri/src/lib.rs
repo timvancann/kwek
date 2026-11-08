@@ -54,7 +54,17 @@ impl Sink for TauriSink {
         let _ = self.app.emit("auth:changed", state);
     }
     fn notify(&self, n: Notification) {
-        notify::show(self.app.clone(), n);
+        // In front: a quiet pop-up inside kwek. Otherwise a system notification, with sound.
+        let focused = self
+            .app
+            .get_webview_window("main")
+            .and_then(|w| w.is_focused().ok())
+            .unwrap_or(false);
+        let payload =
+            json!({ "title": n.title, "body": n.body, "space": n.space, "message": n.message, "thread": n.thread });
+        if !focused || self.app.emit("notify:inapp", payload).is_err() {
+            notify::show(self.app.clone(), n);
+        }
     }
     fn badge(&self, count: u32) {
         if let Some(w) = self.app.get_webview_window("main") {

@@ -7,6 +7,7 @@ import {
   on,
   type AuthState,
   type DeletePayload,
+  type InAppNotice,
   type MessageView,
   type NavPayload,
   type SpaceSummary,
@@ -117,6 +118,15 @@ class AppState {
         if (a.state === "signedOut") this.reset();
       }),
       on<NavPayload>("nav:open", (n) => void this.open(n.space, n.message ?? null, n.thread ?? null)),
+      // While kwek is in front, DMs and mentions elsewhere are a quiet pop-up, not a system
+      // notification.
+      on<InAppNotice>("notify:inapp", (n) =>
+        toast(n.title, {
+          description: n.body,
+          duration: 8000,
+          action: { label: "Open", onClick: () => void this.open(n.space, n.message ?? null, n.thread ?? null) },
+        }),
+      ),
     ]);
     window.addEventListener("focus", () => {
       this.windowFocused = true;

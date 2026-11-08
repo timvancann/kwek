@@ -60,6 +60,11 @@ export interface NavPayload {
   message?: string | null;
   thread?: string | null;
 }
+/** A DM or mention that arrived while kwek is in front. */
+export interface InAppNotice extends NavPayload {
+  title: string;
+  body: string;
+}
 
 export function on<T>(event: string, cb: (payload: T) => void): Promise<UnlistenFn> {
   return listen<T>(event, (e) => cb(e.payload));

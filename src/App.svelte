@@ -46,4 +46,5 @@
 {/if}
 
 <div class="sr-only" aria-live="polite" aria-atomic="true">{app.announce}</div>
-<Toaster position="bottom-right" closeButton />
+<!-- Lifted above the composers, so a pop-up never covers what you are typing. -->
+<Toaster position="bottom-right" closeButton offset={{ bottom: 96 }} />

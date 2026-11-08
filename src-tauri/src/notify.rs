@@ -28,7 +28,8 @@ pub fn show(app: AppHandle, n: Notification) {
             }
         });
         let mut opts = mac_notification_sys::Notification::new();
-        opts.wait_for_click(wait);
+        // The user's alert sound; macOS's per-app notification settings can turn it off.
+        opts.wait_for_click(wait).default_sound();
         let result = mac_notification_sys::send_notification(&n.title, None, &n.body, Some(&opts));
         if wait {
             WAITING.fetch_sub(1, Ordering::SeqCst);
