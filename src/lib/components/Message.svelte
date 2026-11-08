@@ -88,7 +88,7 @@
     "group relative flex gap-3 px-6 outline-none focus:ring-2 focus:ring-ring focus:ring-inset",
     grouped ? "py-0.5" : "mt-2 pt-2 pb-1",
     m.mentionsMe && !m.deleted && "bg-highlight/70",
-    selected ? "bg-accent-soft" : "hover:bg-muted",
+    selected ? "bg-accent-soft" : "hover:bg-hover",
     m.localState === "pending" && "opacity-60",
   )}
 >

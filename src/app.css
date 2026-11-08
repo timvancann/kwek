@@ -2,44 +2,47 @@
 @import "tw-animate-css";
 
 /*
- * Mendel Light (a brand palette mockup): black on white, as little colour
- * as possible, bronze as the one Mendel accent, warning yellow for what needs you (mentions,
- * the New line). The sidebar takes the warm neutral of Mendel Gold's text colour family.
- * Mendel Gold (dark, the website's palette) is the natural dark theme later.
+ * kwek's own palette. One cool grey scale where every surface role is its own step, so no two
+ * roles share a colour: white canvas, sidebar a step down, a hovered message only a half step
+ * (lighter than the sidebar, so it never reads as part of it), the active sidebar row two
+ * steps. Small fills (chips, inline code, secondary buttons) sit between sidebar and its
+ * hover, so they still show on the sidebar. One accent, a mallard teal, for links, focus and selection; amber only for what
+ * needs you (mentions, the New line, search matches).
  * shadcn variable names so its components pick the theme up.
- * Contrast (WCAG 2.2, computed): ink on white 18.9, text-2 on white 8.9, text-2 on the active
- * sidebar row 6.7, bronze on white 5.9, white on bronze 5.9, ink on warning 9.6, ink on
- * warning-soft 16.8, input border on white 3.6 (non-text 3:1).
+ * Contrast (WCAG 2.2, computed): ink on white 17.7, text-2 on white 6.7, text-2 on the active
+ * sidebar row 5.0, teal on white 5.8, white on teal 5.8, teal on teal-soft 5.2, ink on amber
+ * 8.6, input border on white 3.4 (non-text 3:1).
  */
 :root {
   --background: #ffffff;
-  --foreground: #111111;
-  --sidebar: #f5f4f1;
-  --sidebar-foreground: #111111;
-  --sidebar-hover: #ecebe6;
-  --sidebar-active: #e3e0d9;
-  --muted: #f5f4f1;
-  --muted-foreground: #4a4a4a;
-  --border: #e6e4df;
-  --input: #8a8781;
-  --ring: #8a5a1a;
-  --accent: #8a5a1a;
+  --foreground: #18181b;
+  --sidebar: #f4f4f6;
+  --sidebar-foreground: #18181b;
+  --sidebar-hover: #e9e9ee;
+  --sidebar-active: #dedee5;
+  --hover: #f8f8fa;
+  --muted: #efeff3;
+  --muted-foreground: #5b5b66;
+  --border: #e4e4e9;
+  --input: #8b8b96;
+  --ring: #0d7266;
+  --accent: #0d7266;
   --accent-foreground: #ffffff;
-  --accent-soft: #f7efe4;
-  --primary: #111111;
+  --accent-soft: #e9f4f1;
+  --primary: #18181b;
   --primary-foreground: #ffffff;
-  --secondary: #f5f4f1;
-  --secondary-foreground: #111111;
+  --secondary: #efeff3;
+  --secondary-foreground: #18181b;
   --destructive: #b42318;
   --destructive-foreground: #ffffff;
   --success: #1f7a3a;
   --popover: #ffffff;
-  --popover-foreground: #111111;
+  --popover-foreground: #18181b;
   --card: #ffffff;
-  --card-foreground: #111111;
-  --highlight: #fff1c7;
-  --highlight-strong: #f9a800;
-  --badge: #111111;
+  --card-foreground: #18181b;
+  --highlight: #fff1c2;
+  --highlight-strong: #f5a400;
+  --badge: #18181b;
   --badge-foreground: #ffffff;
   --radius: 8px;
   color-scheme: light;
@@ -52,6 +55,7 @@
   --color-sidebar-foreground: var(--sidebar-foreground);
   --color-sidebar-hover: var(--sidebar-hover);
   --color-sidebar-active: var(--sidebar-active);
+  --color-hover: var(--hover);
   --color-muted: var(--muted);
   --color-muted-foreground: var(--muted-foreground);
   --color-border: var(--border);
@@ -78,10 +82,10 @@
   --radius-sm: calc(var(--radius) - 2px);
   --radius-md: var(--radius);
   --radius-lg: calc(var(--radius) + 2px);
-  /* Mendel's type: Plus Jakarta Sans for text, Poppins for headings, JetBrains Mono for code. */
-  --font-sans: "Plus Jakarta Sans Variable", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
-  --font-display: "Poppins", "Plus Jakarta Sans Variable", system-ui, sans-serif;
-  --font-mono: "JetBrains Mono Variable", ui-monospace, "SF Mono", Menlo, monospace;
+  /* The system's own type (SF Pro, SF Mono on macOS): native, and nothing to ship. */
+  --font-sans: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --font-display: var(--font-sans);
+  --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
 }
 
 @layer base {
