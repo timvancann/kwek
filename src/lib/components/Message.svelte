@@ -15,6 +15,14 @@
   import External from "@lucide/svelte/icons/external-link";
   import Paperclip from "@lucide/svelte/icons/paperclip";
   import HardDrive from "@lucide/svelte/icons/hard-drive";
+  import Video from "@lucide/svelte/icons/video";
+
+  /** "12 min", "1 h 5 min", or "under a minute". */
+  function callLength(secs: number): string {
+    if (secs < 60) return "under a minute";
+    const min = Math.round(secs / 60);
+    return min < 60 ? `${min} min` : `${Math.floor(min / 60)} h${min % 60 ? ` ${min % 60} min` : ""}`;
+  }
 
   let {
     m,
@@ -125,6 +133,24 @@
         <Blocks blocks={m.blocks} tabbable={selected} />
         {#if m.edited}<span class="ml-1 text-[12px] text-muted-foreground" aria-hidden="true">(edited)</span>{/if}
       </div>
+
+      {#if m.call}
+        {@const call = m.call}
+        <!-- Not ended yet and recent: it may still be going, so it can be joined. A call nobody
+             picked up looks the same, hence the short window. -->
+        {@const live = call.durationSecs === null && Date.now() * 1000 - m.createUs < 3600e6}
+        <div class="mt-1 inline-flex items-center gap-2 rounded-lg border border-border bg-muted py-1 pr-1 pl-3 text-[14px]">
+          <Video class="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+          <span class={cn(!live && "pr-2")}>{call.durationSecs === null ? "Call" : `Call, ${callLength(call.durationSecs)}`}</span>
+          {#if live}
+            <button
+              tabindex={inner}
+              class="rounded-md bg-primary px-2.5 py-0.5 text-[12px] font-medium text-primary-foreground hover:bg-primary/85"
+              onclick={() => void api.openUrl(call.url)}>Join call</button
+            >
+          {/if}
+        </div>
+      {/if}
 
       {#if m.hasCards}
         <p class="my-1 text-[12px] text-muted-foreground">

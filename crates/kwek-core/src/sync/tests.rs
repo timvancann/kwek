@@ -419,6 +419,54 @@ async fn bootstrap_fills_cache_with_unread_and_dm_names() {
     assert!(!thread[0].is_reply && thread[1].is_reply && thread[1].is_own);
 }
 
+/// What Chat posts when someone starts a call: no text, just a Meet link.
+fn call_message(id: &str, at: Micros, ended_after: Option<Micros>) -> Message {
+    let mut m = message("spaces/dm", id, "users/ada", &ts::format(at), "", id, false);
+    m.formatted_text = None;
+    m.annotations = Some(vec![serde_json::json!({
+        "type": "RICH_LINK",
+        "richLinkMetadata": { "uri": "https://meet.google.com/abc-defg-hij", "richLinkType": "MEET_SPACE" }
+    })]);
+    m.last_update_time = ended_after.map(|d| ts::format(at + d));
+    m
+}
+
+#[tokio::test]
+async fn an_incoming_call_notifies_with_join_even_in_the_open_conversation() {
+    let f = world();
+    let (e, rec) = engine(&f).await;
+    e.bootstrap().await.unwrap();
+    e.set_open(Some("spaces/dm".into()), None);
+    e.set_window_focused(true);
+    let now = ts::now();
+    let a =
+        e.db.with(|c| {
+            apply(
+                c,
+                &[
+                    Event::MessageUpserted(call_message("ringing", now - 10 * ts::SECOND, None)),
+                    Event::MessageUpserted(call_message("over", now - 30 * ts::SECOND, Some(20 * ts::SECOND))),
+                ],
+                ME,
+            )
+        })
+        .unwrap();
+    e.after_apply(a, true).await;
+    let notes = rec.notes.lock().unwrap().clone();
+    assert_eq!(notes.len(), 1, "only the call still ringing: {notes:?}");
+    assert_eq!(notes[0].title, "Ada Lovelace is calling you");
+    assert_eq!(notes[0].url.as_deref(), Some("https://meet.google.com/abc-defg-hij"));
+
+    // In the conversation: a call, not a bare link, and its end is not an "edit".
+    let msgs = e.get_messages("spaces/dm", None, 50).unwrap();
+    let ringing = msgs.iter().find(|m| m.name.ends_with("/ringing")).unwrap();
+    let over = msgs.iter().find(|m| m.name.ends_with("/over")).unwrap();
+    assert_eq!(ringing.call.as_ref().unwrap().duration_secs, None);
+    assert!(ringing.blocks.is_empty());
+    assert_eq!(over.call.as_ref().unwrap().duration_secs, Some(20));
+    assert!(!over.edited);
+}
+
 #[tokio::test]
 async fn hidden_and_ordered_spaces_survive_a_refresh() {
     let f = world();

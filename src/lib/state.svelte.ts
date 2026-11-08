@@ -6,6 +6,7 @@ import {
   errorText,
   on,
   type AuthState,
+  type CalendarView,
   type DeletePayload,
   type InAppNotice,
   type MessageView,
@@ -85,6 +86,8 @@ class AppState {
   confirmDelete = $state<MessageView | null>(null);
   confirmSignOut = $state(false);
   reactTo = $state<MessageView | null>(null);
+  /** Meetings from the user's calendar, and whether it can be read. */
+  calendar = $state<CalendarView>({ state: "off", detail: null, meetings: [] });
   /** The image viewer: a message's images, opened at `index` (among its images). */
   viewing = $state<{ message: MessageView; index: number; from?: HTMLElement } | null>(null);
   announce = $state("");
@@ -151,10 +154,14 @@ class AppState {
       on<InAppNotice>("notify:inapp", (n) =>
         toast(n.title, {
           description: n.body,
-          duration: 8000,
-          action: { label: "Open", onClick: () => void this.open(n.space, n.message ?? null, n.thread ?? null) },
+          // A call or meeting waits longer for its Join than a message for its Open.
+          duration: n.url ? 60_000 : 8000,
+          action: n.url
+            ? { label: "Join", onClick: () => void api.openUrl(n.url!) }
+            : { label: "Open", onClick: () => void this.open(n.space, n.message ?? null, n.thread ?? null) },
         }),
       ),
+      on<CalendarView>("calendar:changed", (c) => (this.calendar = c)),
     ]);
     window.addEventListener("focus", () => {
       this.windowFocused = true;
@@ -163,6 +170,7 @@ class AppState {
     window.addEventListener("blur", () => (this.windowFocused = false));
     this.auth = await api.authStatus();
     this.status = await api.syncStatus();
+    this.calendar = await api.calendar().catch(() => this.calendar);
     if (this.auth.state === "signedIn") await this.loadSpaces();
     this.ready = true;
   }
@@ -438,6 +446,18 @@ class AppState {
 
   async toggleMute(space: SpaceSummary) {
     await api.setSpacePrefs(space.name, { muted: !space.muted });
+  }
+
+  /** ⌘J: joins the meeting that is running or starts within ten minutes. */
+  joinMeeting() {
+    const now = Date.now() * 1000;
+    const m = this.calendar.meetings.find((x) => x.joinUrl && x.startUs - 10 * 60e6 <= now && now < x.endUs);
+    if (m?.joinUrl) {
+      void api.openUrl(m.joinUrl);
+      this.say(`Joining ${m.title}.`);
+    } else {
+      toast("No meeting with a video link in the next ten minutes.");
+    }
   }
 
   async toggleHidden(space: SpaceSummary) {

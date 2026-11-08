@@ -51,14 +51,20 @@ pub struct Outgoing {
     pub content_type: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Notification {
     pub title: String,
     pub body: String,
     pub space: String,
     pub message: String,
     pub thread: Option<String>,
+    /// A call or meeting to join: clicking opens this (Meet, in the browser) instead of the
+    /// message.
+    pub url: Option<String>,
 }
+
+/// How long a call keeps ringing, as far as kwek is concerned.
+const CALL_RINGS: Micros = 2 * MINUTE;
 
 /// Where the engine pushes changes, always after the DB commit.
 pub trait Sink: Send + Sync {
@@ -69,6 +75,8 @@ pub trait Sink: Send + Sync {
     fn auth(&self, state: AuthState);
     fn notify(&self, n: Notification);
     fn badge(&self, count: u32);
+    /// The calendar's meetings or state changed.
+    fn calendar(&self, _view: views::CalendarView) {}
 }
 
 #[derive(Default)]
@@ -196,6 +204,22 @@ impl Engine {
         self.ensure_identity().await?;
         self.sink.auth(self.auth_state());
         self.wake.notify_one();
+        Ok(())
+    }
+
+    /// Signs in again while signed in, to grant permissions added since (calendar access).
+    /// The session carries on; only the stored sign-in is replaced. Picking another Google
+    /// account in the browser is handled as signing in as them: the identity check clears
+    /// the previous account's cache, as a normal sign-in would.
+    pub async fn reauthorize(&self, open: impl FnOnce(&str) -> Result<()>) -> Result<()> {
+        let tokens = self.tokens.clone().ok_or(Error::NoOAuthClient)?;
+        tokens.login(open).await?;
+        let before = self.me();
+        let now = self.ensure_identity().await?;
+        if before != now {
+            self.sink.auth(self.auth_state());
+            self.wake.notify_one();
+        }
         Ok(())
     }
 
@@ -906,14 +930,41 @@ impl Engine {
         let now = ts::now();
         let b = Builder { me: &me, users: &users };
         let mut out: Vec<Notification> = Vec::new();
+        let mut calls: Vec<Notification> = Vec::new();
         for r in rows {
             let Some(space) = spaces.iter().find(|s| s.name == r.space) else {
                 continue;
             };
             let is_dm = space.space_type == "DIRECT_MESSAGE";
+            if r.sender == me || space.muted || r.delete_us.is_some() {
+                continue;
+            }
+            // Someone calling: worth telling even in the open conversation, while it rings
+            // (fresh, and not yet ended, which updates the message).
+            if (is_dm || space.space_type == "GROUP_CHAT")
+                && let Some(url) = views::call_link(&r)
+            {
+                if now - r.create_us < CALL_RINGS && r.update_us <= r.create_us + ts::SECOND {
+                    let caller = b.user(&r.sender).display_name;
+                    let title = if is_dm {
+                        format!("{caller} is calling you")
+                    } else {
+                        format!("{caller} started a call in {}", b.space(space, &[], None).display_name)
+                    };
+                    calls.push(Notification {
+                        title,
+                        body: "Join the call in your browser.".into(),
+                        space: r.space.clone(),
+                        message: r.name.clone(),
+                        thread: r.thread.clone(),
+                        url: Some(url),
+                    });
+                }
+                continue;
+            }
             let fresh = now - r.create_us < 5 * MINUTE;
             let open_here = window_focused && focused_space.as_deref() == Some(r.space.as_str());
-            if r.sender == me || space.muted || !fresh || open_here || r.delete_us.is_some() {
+            if !fresh || open_here {
                 continue;
             }
             if !(is_dm || r.mentions_me) {
@@ -940,6 +991,7 @@ impl Engine {
                 space: r.space.clone(),
                 message: r.name.clone(),
                 thread: r.thread.clone(),
+                url: None,
             });
         }
         // A burst (catching up after sleep) becomes one notification for the newest.
@@ -952,6 +1004,8 @@ impl Engine {
                 ..latest
             }];
         }
+        // Calls never fold into a burst: each one wants its own Join.
+        out.extend(calls);
         for n in out {
             self.sink.notify(n);
         }

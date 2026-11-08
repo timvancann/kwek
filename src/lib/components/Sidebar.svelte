@@ -1,6 +1,10 @@
 <script lang="ts">
-  import type { SpaceSummary } from "$lib/api";
+  import { api, errorText, type MeetingView, type SpaceSummary } from "$lib/api";
+  import { clock } from "$lib/format";
   import { app, type SpaceSort } from "$lib/state.svelte";
+  import { toast } from "svelte-sonner";
+  import CalendarIcon from "@lucide/svelte/icons/calendar";
+  import X from "@lucide/svelte/icons/x";
   import { cn } from "$lib/utils";
   import { tick } from "svelte";
   import Avatar from "./Avatar.svelte";
@@ -15,6 +19,51 @@
   import EyeOff from "@lucide/svelte/icons/eye-off";
 
   let nav: HTMLElement | undefined = $state();
+
+  // ------------------------------------------------------------- next meeting
+
+  /** Ticks so "in 4 min" stays true. */
+  let now = $state(Date.now() * 1000);
+  $effect(() => {
+    const t = setInterval(() => (now = Date.now() * 1000), 20_000);
+    return () => clearInterval(t);
+  });
+  /** The meeting running now or next, within twelve hours. */
+  const next = $derived(app.calendar.meetings.find((m) => m.endUs > now && m.startUs - now < 12 * 3600e6));
+
+  function when(m: MeetingView): string {
+    if (m.startUs <= now) return "now";
+    const min = Math.round((m.startUs - now) / 60e6);
+    return min < 60 ? `in ${Math.max(1, min)} min` : `at ${clock(m.startUs)}`;
+  }
+
+  let connecting = $state(false);
+  let promptDismissed = $state(readDismissed());
+  function readDismissed(): boolean {
+    try {
+      return localStorage.getItem("kwek.calendarPromptDismissed") === "1";
+    } catch {
+      return false;
+    }
+  }
+  function dismissPrompt() {
+    promptDismissed = true;
+    try {
+      localStorage.setItem("kwek.calendarPromptDismissed", "1");
+    } catch {
+      // Private storage unavailable: hidden until restart.
+    }
+  }
+  async function connectCalendar() {
+    connecting = true;
+    try {
+      await api.connectCalendar();
+    } catch (e) {
+      toast.error(errorText(e));
+    } finally {
+      connecting = false;
+    }
+  }
 
   const SORT_LABEL: Record<SpaceSort, string> = { recent: "Recent", az: "A to Z", custom: "Custom" };
   const SORT_SPOKEN: Record<SpaceSort, string> = { recent: "by recent activity", az: "A to Z", custom: "in your own order" };
@@ -252,6 +301,45 @@
       </div>
     {/each}
   </div>
+
+  {#if next}
+    <section aria-label="Next meeting" class="mx-3 mb-2 flex items-center gap-2 rounded-lg border border-border bg-background py-1.5 pr-1.5 pl-3">
+      <CalendarIcon class="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+      <button
+        class="min-w-0 flex-1 text-left"
+        title={next.openUrl ? "Open in Google Calendar" : undefined}
+        disabled={!next.openUrl}
+        onclick={() => next?.openUrl && void api.openUrl(next.openUrl)}
+      >
+        <span class="block truncate text-[13px] font-medium">{next.title}</span>
+        <span class={cn("block text-[12px]", next.startUs <= now ? "font-medium text-accent" : "text-muted-foreground")}>{when(next)}</span>
+      </button>
+      {#if next.joinUrl}
+        <button
+          class="shrink-0 rounded-md bg-primary px-2.5 py-1 text-[12px] font-medium text-primary-foreground hover:bg-primary/85"
+          aria-label="Join {next.title}"
+          aria-keyshortcuts="Meta+J"
+          title="Join in your browser (⌘J)"
+          onclick={() => next?.joinUrl && void api.openUrl(next.joinUrl)}>Join</button
+        >
+      {/if}
+    </section>
+  {:else if app.calendar.state === "needsPermission" && !promptDismissed}
+    <div class="mx-3 mb-2 flex items-center gap-2 rounded-lg border border-dashed border-input py-1.5 pr-1 pl-3 text-[12px] text-muted-foreground">
+      <CalendarIcon class="size-4 shrink-0" aria-hidden="true" />
+      <button class="min-w-0 flex-1 text-left hover:text-foreground" onclick={connectCalendar} disabled={connecting}>
+        {connecting ? "Finish in the browser, then come back" : "Connect your calendar for meeting reminders"}
+      </button>
+      <button
+        class="grid size-6 shrink-0 place-items-center rounded-md hover:bg-sidebar-hover hover:text-foreground"
+        aria-label="Not now"
+        title="Not now"
+        onclick={dismissPrompt}
+      >
+        <X class="size-3.5" aria-hidden="true" />
+      </button>
+    </div>
+  {/if}
 
   <div class="flex items-center gap-1 border-t border-border px-2 py-1.5">
     <SyncIndicator />

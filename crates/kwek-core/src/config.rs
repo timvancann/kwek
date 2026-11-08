@@ -22,6 +22,8 @@ pub const SCOPES: &[&str] = &[
     // people/me: who the signed-in user is (users/{id}, name, email).
     "https://www.googleapis.com/auth/userinfo.profile",
     "https://www.googleapis.com/auth/userinfo.email",
+    // Meeting reminders: read-only, events only.
+    "https://www.googleapis.com/auth/calendar.events.readonly",
 ];
 
 pub const KEYCHAIN_SERVICE: &str = "nl.timvancann.kwek";

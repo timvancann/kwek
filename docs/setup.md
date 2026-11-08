@@ -10,7 +10,7 @@ Create a project (or pick an existing one) and link a billing account. kwek's us
 
 ```sh
 P=your-project-id
-gcloud services enable chat.googleapis.com workspaceevents.googleapis.com pubsub.googleapis.com people.googleapis.com --project=$P
+gcloud services enable chat.googleapis.com workspaceevents.googleapis.com pubsub.googleapis.com people.googleapis.com calendar-json.googleapis.com --project=$P
 gcloud pubsub topics create chat-events --project=$P
 gcloud pubsub topics add-iam-policy-binding chat-events --project=$P \
   --member=serviceAccount:chat-api-push@system.gserviceaccount.com --role=roles/pubsub.publisher
@@ -46,6 +46,7 @@ In https://console.cloud.google.com with your project selected, open **Google Au
    - `https://www.googleapis.com/auth/pubsub`
    - `https://www.googleapis.com/auth/directory.readonly`
    - `https://www.googleapis.com/auth/userinfo.profile` and `userinfo.email` (who is signed in; Internal apps may request them without listing them)
+   - `https://www.googleapis.com/auth/calendar.events.readonly` (meeting reminders with a Join button; without it kwek works, minus reminders)
 4. **Clients**: create client, type **Desktop app**, name `kwek desktop`. Download the JSON and keep it: kwek asks for this client file on first launch.
 
 ## 3. Chat app configuration (console)

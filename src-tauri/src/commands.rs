@@ -6,7 +6,9 @@ use std::sync::PoisonError;
 use kwek_core::Error;
 use kwek_core::config::GoogleSetup;
 use kwek_core::sync::{Engine, Outgoing};
-use kwek_core::views::{AuthState, GoogleSetupView, MessageView, SearchResult, SpaceSummary, SyncStatus, UserRef};
+use kwek_core::views::{
+    AuthState, CalendarView, GoogleSetupView, MessageView, SearchResult, SpaceSummary, SyncStatus, UserRef,
+};
 use tauri::{AppHandle, State};
 use tauri_plugin_opener::OpenerExt;
 
@@ -100,12 +102,37 @@ pub async fn login(app: AppHandle, state: State<'_, AppState>) -> Res<()> {
                 .map_err(|e| Error::Other(format!("could not open the browser: {e}")))
         })
         .await
-        .map_err(msg)
+        .map_err(msg)?;
+    state.agenda.poke();
+    Ok(())
 }
 
 #[tauri::command]
 pub async fn logout(state: State<'_, AppState>) -> Res<()> {
-    state.engine.logout().await.map_err(msg)
+    state.engine.logout().await.map_err(msg)?;
+    state.agenda.poke();
+    Ok(())
+}
+
+#[tauri::command]
+pub fn calendar(state: State<'_, AppState>) -> CalendarView {
+    state.agenda.view()
+}
+
+/// Signs in again to grant calendar access; the chat session carries on meanwhile.
+#[tauri::command]
+pub async fn connect_calendar(app: AppHandle, state: State<'_, AppState>) -> Res<()> {
+    state
+        .engine
+        .reauthorize(|url| {
+            app.opener()
+                .open_url(url, None::<&str>)
+                .map_err(|e| Error::Other(format!("could not open the browser: {e}")))
+        })
+        .await
+        .map_err(msg)?;
+    state.agenda.poke();
+    Ok(())
 }
 
 #[tauri::command]

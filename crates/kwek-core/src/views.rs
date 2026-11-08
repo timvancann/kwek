@@ -111,6 +111,60 @@ pub struct MessageView {
     /// The message carries app cards that kwek does not render.
     pub has_cards: bool,
     pub web_url: Option<String>,
+    /// Set when the message is a call (Chat posts a bare Meet link when one starts).
+    pub call: Option<CallView>,
+}
+
+/// A meeting from the user's calendar, for the sidebar and reminders.
+#[derive(Debug, Clone, Serialize, TS, PartialEq)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct MeetingView {
+    pub id: String,
+    pub title: String,
+    #[ts(type = "number")]
+    pub start_us: Micros,
+    #[ts(type = "number")]
+    pub end_us: Micros,
+    /// The Meet link, when the meeting has one.
+    pub join_url: Option<String>,
+    /// The event in Google Calendar.
+    pub open_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, TS, PartialEq)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct CalendarView {
+    /// `off` (signed out, or not loaded yet), `ok`, `needsPermission` (the sign-in lacks
+    /// calendar access), `unavailable` (see detail).
+    pub state: String,
+    pub detail: Option<String>,
+    /// Running and upcoming meetings for the next day, soonest first.
+    pub meetings: Vec<MeetingView>,
+}
+
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct CallView {
+    pub url: String,
+    /// How long it lasted: Chat updates the message when the call ends. None while it runs,
+    /// or for a call nobody picked up.
+    pub duration_secs: Option<u32>,
+}
+
+/// The Meet link of a call message: no text, only a Meet rich link. Chat posts one when
+/// someone starts a call in a conversation, and updates it when the call ends.
+pub fn call_link(m: &MessageRow) -> Option<String> {
+    if m.text.as_deref().is_some_and(|t| !t.trim().is_empty()) {
+        return None;
+    }
+    let annotations: Vec<serde_json::Value> = serde_json::from_str(m.annotations.as_deref()?).ok()?;
+    annotations
+        .iter()
+        .find(|a| a.pointer("/richLinkMetadata/richLinkType").and_then(|t| t.as_str()) == Some("MEET_SPACE"))
+        .and_then(|a| a.pointer("/richLinkMetadata/uri")?.as_str().map(str::to_owned))
 }
 
 /// The Google Cloud setup kwek signs in with, for the sign-in screen.
@@ -308,12 +362,18 @@ impl Builder<'_> {
             me: self.me,
             name_of: &|u| self.name_of(u),
         };
+        let call = (!deleted).then(|| call_link(m)).flatten().map(|url| CallView {
+            url,
+            duration_secs: (m.update_us > m.create_us + crate::ts::SECOND)
+                .then(|| ((m.update_us - m.create_us) / crate::ts::SECOND) as u32),
+        });
         let mut blocks = if deleted {
             vec![]
         } else {
             render::parse(m.formatted_text.as_deref().or(m.text.as_deref()).unwrap_or(""), &ctx)
         };
-        if blocks.is_empty() && !deleted {
+        // A call shows as a call, not as its bare link.
+        if blocks.is_empty() && !deleted && call.is_none() {
             blocks = rich_link_blocks(m.annotations.as_deref());
         }
 
@@ -349,7 +409,8 @@ impl Builder<'_> {
             sender: self.user(&m.sender),
             is_own: m.sender == self.me,
             create_us: m.create_us,
-            edited: !deleted && m.update_us > m.create_us + 1_000_000,
+            // A call's update is its end, not an edit.
+            edited: !deleted && m.update_us > m.create_us + 1_000_000 && call.is_none(),
             deleted,
             mentions_me: m.mentions_me,
             blocks,
@@ -366,6 +427,7 @@ impl Builder<'_> {
             local_state: m.local_state.clone(),
             has_cards: m.cards.as_deref().is_some_and(|c| c != "[]"),
             web_url: message_web_url(space_uri, m),
+            call,
         }
     }
 }

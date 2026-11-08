@@ -14,6 +14,8 @@ A fast, keyboard-first Google Chat client for macOS. *Kwek* is Dutch for roughly
   your phone.
 - Send, reply in a thread, edit, delete, react. Paste, drop or pick images to send them.
 - Notifications for DMs and mentions, with sound; a quiet pop-up while kwek is in front.
+- Someone calls you, or a meeting is about to start: a notification with Join, which opens
+  Meet in your browser. The next meeting sits in the sidebar; `⌘J` joins it.
 
 **Find**
 

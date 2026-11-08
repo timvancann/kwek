@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
 use kwek_core::auth::{TokenManager, default_store};
+use kwek_core::calendar::{Agenda, HttpCalendar};
 use kwek_core::chat::HttpChat;
 use kwek_core::config::{GoogleSetup, SharedSetup};
 use kwek_core::db::Db;
@@ -24,6 +25,7 @@ use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 
 pub struct AppState {
     pub engine: Arc<Engine>,
+    pub agenda: Arc<Agenda>,
     pub media_dir: PathBuf,
     pub data_dir: PathBuf,
     pub setup: SharedSetup,
@@ -63,11 +65,15 @@ impl Sink for TauriSink {
             .get_webview_window("main")
             .and_then(|w| w.is_focused().ok())
             .unwrap_or(false);
-        let payload =
-            json!({ "title": n.title, "body": n.body, "space": n.space, "message": n.message, "thread": n.thread });
+        let payload = json!({
+            "title": n.title, "body": n.body, "space": n.space, "message": n.message, "thread": n.thread, "url": n.url,
+        });
         if !focused || self.app.emit("notify:inapp", payload).is_err() {
             notify::show(self.app.clone(), n);
         }
+    }
+    fn calendar(&self, view: kwek_core::views::CalendarView) {
+        let _ = self.app.emit("calendar:changed", view);
     }
     fn badge(&self, count: u32) {
         if let Some(w) = self.app.get_webview_window("main") {
@@ -182,6 +188,8 @@ pub fn run() {
             if !embedder.available() {
                 tracing::warn!("search model files missing; search by meaning is off");
             }
+            // Meetings: its own loop, so a calendar that can't be read never touches chat.
+            let agenda = Agenda::new(Arc::new(HttpCalendar::new(g.clone())), sink.clone());
             let engine = Engine::new(
                 db,
                 Arc::new(HttpChat::new(g.clone())),
@@ -196,8 +204,10 @@ pub fn run() {
             tauri::async_runtime::spawn(engine.clone().run());
             tauri::async_runtime::spawn(engine.clone().backfill());
             tauri::async_runtime::spawn(engine.clone().index());
+            tauri::async_runtime::spawn(agenda.clone().run());
             app.manage(AppState {
                 engine,
+                agenda,
                 media_dir,
                 data_dir,
                 setup,
@@ -222,6 +232,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::auth_status,
+            commands::calendar,
+            commands::connect_calendar,
             commands::stage_attachment,
             commands::unstage_attachment,
             commands::google_setup,

@@ -30,11 +30,26 @@ pub fn show(app: AppHandle, n: Notification) {
         let mut opts = mac_notification_sys::Notification::new();
         // The user's alert sound; macOS's per-app notification settings can turn it off.
         opts.wait_for_click(wait).default_sound();
+        // A call or meeting: a Join button, and clicking anywhere joins too. Only when kwek can
+        // wait for the click; otherwise the button would lead nowhere.
+        let join = n.url.as_deref().filter(|u| u.starts_with("https://"));
+        if join.is_some() && wait {
+            opts.main_button(mac_notification_sys::MainButton::SingleAction("Join"));
+        }
         let result = mac_notification_sys::send_notification(&n.title, None, &n.body, Some(&opts));
         if wait {
             WAITING.fetch_sub(1, Ordering::SeqCst);
         }
         match result {
+            Ok(mac_notification_sys::NotificationResponse::Click)
+            | Ok(mac_notification_sys::NotificationResponse::ActionButton(_))
+                if join.is_some() =>
+            {
+                use tauri_plugin_opener::OpenerExt;
+                if let Err(e) = app.opener().open_url(join.unwrap_or_default(), None::<&str>) {
+                    tracing::warn!("could not open the meeting: {e}");
+                }
+            }
             Ok(mac_notification_sys::NotificationResponse::Click)
             | Ok(mac_notification_sys::NotificationResponse::ActionButton(_)) => {
                 if let Some(w) = app.get_webview_window("main") {

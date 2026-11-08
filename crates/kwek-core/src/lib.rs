@@ -2,6 +2,7 @@
 //! shell is a thin adapter over this crate.
 
 pub mod auth;
+pub mod calendar;
 pub mod chat;
 pub mod config;
 pub mod db;

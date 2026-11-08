@@ -3,16 +3,21 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { AuthState } from "./bindings/AuthState";
+import type { CalendarView } from "./bindings/CalendarView";
 import type { GoogleSetupView } from "./bindings/GoogleSetupView";
+import type { MeetingView } from "./bindings/MeetingView";
 import type { MessageView } from "./bindings/MessageView";
 import type { SearchResult } from "./bindings/SearchResult";
 import type { SpaceSummary } from "./bindings/SpaceSummary";
 import type { SyncStatus } from "./bindings/SyncStatus";
 import type { UserRef } from "./bindings/UserRef";
 
-export type { AuthState, GoogleSetupView, MessageView, SearchResult, SpaceSummary, SyncStatus, UserRef };
+export type { AuthState, CalendarView, GoogleSetupView, MeetingView, MessageView, SearchResult, SpaceSummary, SyncStatus, UserRef };
 
 export const api = {
+  calendar: () => invoke<CalendarView>("calendar"),
+  /** Signs in again in the browser to grant calendar access. */
+  connectCalendar: () => invoke<void>("connect_calendar"),
   googleSetup: () => invoke<GoogleSetupView | null>("google_setup"),
   setGoogleSetup: (json: string) => invoke<GoogleSetupView>("set_google_setup", { json }),
   authStatus: () => invoke<AuthState>("auth_status"),
@@ -78,6 +83,8 @@ export interface NavPayload {
 export interface InAppNotice extends NavPayload {
   title: string;
   body: string;
+  /** A call or meeting to join (Meet, in the browser). */
+  url?: string | null;
 }
 
 export function on<T>(event: string, cb: (payload: T) => void): Promise<UnlistenFn> {
