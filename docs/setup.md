@@ -50,11 +50,13 @@ In https://console.cloud.google.com with your project selected, open **Google Au
 
 ## 3. Chat app configuration (console)
 
-APIs & Services, Google Chat API, **Configuration** tab. Live events are refused until this exists; without it kwek falls back to polling once a minute.
+APIs & Services, Google Chat API, **Configuration** tab. kwek only needs this app to exist: without it Google refuses live events (kwek then polls once a minute) and image uploads ("Google Chat app not found").
 
+- "Build this Chat app as a Workspace add-on": leave it as it is (clearing it can't be undone, and kwek works either way).
 - App name `kwek`, avatar URL any public https PNG (e.g. `https://developers.google.com/chat/images/quickstart-app-avatar.png`), description `Desktop client`.
-- Interactive features: **off**.
-- Visibility: specific people, the accounts that will use kwek.
+- **Enable Interactive features: off.** Everything that follows it (joining spaces, App Home, connection settings and HTTP endpoints, commands, link previews) is for a Chat app people talk to, and disappears.
+- Visibility: leave it unticked.
+- Markup syntax: keep MARKDOWN. Logs: as you like.
 - Save.
 
 ## 4. Start kwek
