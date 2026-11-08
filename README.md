@@ -1,28 +1,95 @@
 # kwek
 
-*kwek* (Dutch, roughly "quack", or what you call endless chatter) is a fast, keyboard-first macOS client for Google Chat.
+A fast, keyboard-first Google Chat client for macOS. *Kwek* is Dutch for roughly
+"quack", and for what you call endless chatter.
 
-![kwek with a conversation and its thread open](docs/images/kwek.png)
+![A conversation with its thread open](docs/images/kwek.png)
 
-- **Instant.** Your whole history lives in a local cache; live updates stream in from Google.
-- **Search that finds conversations.** "demo data" finds the chat where someone said "demo" in one message and "dataset" in the next, plus related talk found by a small model running on your Mac. Narrow down with `from:` and `in:` ([screenshot](docs/images/kwek-search.png)).
-- **Vim keys.** `j`/`k`, `⌘K` to jump, `⌘F` to search, `r` to reply, `?` for the rest.
-- **Yours.** Your own Google Cloud project, no server in between, no telemetry.
+## What it does
+
+**Read and write**
+
+- Every space, DM and thread from a local cache: switching and scrolling never wait.
+- Live updates for messages, edits, reactions and read state, in step with the web and
+  your phone.
+- Send, reply in a thread, edit, delete, react. Notifications for DMs and mentions.
+
+**Find**
+
+- Search finds the conversation: "demo data" matches the chat where someone said "demo"
+  in one message and "dataset" in the next.
+- Related results from a small model running on your Mac, for when you remember the
+  topic but not the words.
+- Narrow down with `from:` and `in:` (pick a name from the list), `before:` and `after:`.
+- Your whole history downloads in the background, so search reaches back to the start.
+
+![Search with a filter](docs/images/kwek-search.png)
+
+**Everywhere**
+
+- Keyboard first, with Vim keys: `j`/`k`, `⌘K` to jump, `⌘F` to search, `r` to reply.
+  `?` lists them all.
+- Your own Google Cloud project: no server in between, no telemetry.
+
+## Getting started
+
+kwek needs a Google Workspace account (the Chat API doesn't serve personal Gmail) and
+your own small Google Cloud setup, done once in about 15 minutes:
+[docs/setup.md](docs/setup.md). Then, with [Rust](https://rustup.rs), Node with
+[pnpm](https://pnpm.io) and [just](https://github.com/casey/just):
+
+```sh
+just run       # run from source
+just install   # build kwek.app into ~/Applications
+```
+
+Open kwek and press Connect to Google. Its cache, logs and settings live in
+`~/Library/Application Support/nl.timvancann.kwek/` and
+`~/Library/Logs/nl.timvancann.kwek/`. Building and contributing:
+[docs/development.md](docs/development.md).
 
 ## Inspiration
 
-The layout is **Slack**'s, minus the feature list. The colours follow **[T3 Code](https://github.com/pingdotgg/t3code)**'s idea of one grey scale with a single accent (a mallard teal here, because of the name). The keys come from **Vim**. Most of the code was written by **[Claude](https://claude.com/claude-code)**, with Tim writing the spec and making the calls.
+I spend my working day in Google Chat, and in the browser it never felt quick: every
+space switch waits on the network, search finds a word but not the conversation I
+meant, and my hands keep leaving the keyboard. kwek is the client I wanted instead.
 
-## Get started
+The layout is Slack's (sidebar, channel, thread panel) without its feature list. The
+colours follow [T3 Code](https://github.com/pingdotgg/t3code)'s idea of one grey scale
+with a single accent, here a mallard teal, because of the name. The keys come from Vim.
+Most of the code was written by [Claude](https://claude.com/claude-code): I wrote the
+spec, made the calls and used it every day, and review agents played a picky designer
+and a picky Rust engineer before anything counted as done.
 
-You need a Google Workspace account (the Chat API skips personal Gmail) and macOS. Do the 15-minute [Google Cloud setup](docs/setup.md), then:
+## Acknowledgements
 
-```sh
-just install
-```
+kwek stands on these projects:
 
-Open kwek from `~/Applications` and press **Connect to Google**. Building from source and contributing: [docs/development.md](docs/development.md).
+- [Tauri](https://tauri.app) and [Svelte](https://svelte.dev), with
+  [bits-ui](https://bits-ui.com), [shadcn-svelte](https://shadcn-svelte.com) and
+  [Tailwind CSS](https://tailwindcss.com) for the interface.
+- [SQLite](https://sqlite.org) with FTS5, through
+  [rusqlite](https://github.com/rusqlite/rusqlite), for the cache and keyword search.
+- [fastembed](https://github.com/Anush008/fastembed-rs) and
+  [ONNX Runtime](https://onnxruntime.ai) running
+  [multilingual-e5-small](https://huggingface.co/intfloat/multilingual-e5-small) for
+  related results.
+- [pulldown-cmark](https://github.com/pulldown-cmark/pulldown-cmark) for message
+  formatting, [ts-rs](https://github.com/Aleph-Alpha/ts-rs) to keep Rust and TypeScript
+  in step, [keyring](https://github.com/hwchen/keyring-rs) for the Keychain.
+- Icons from [Lucide](https://lucide.dev).
+
+## Roadmap
+
+- **Dark mode.** Every colour is already a named token, so it starts as a second set of
+  values; then it needs checking screen by screen.
+- **Attachments.** Paste or drop a file to send it. Today kwek only shows and downloads
+  them.
+- **A download.** One signed build that works with anyone's Google project, set up in
+  the app instead of baked in at build time.
 
 ## Licence
 
-Apache 2.0 with the [Commons Clause](https://commonsclause.com/) ([LICENSE](LICENSE)): use, change and share it freely, including at work, but don't sell it or a fork of it.
+Apache 2.0 with the [Commons Clause](https://commonsclause.com/) ([LICENSE](LICENSE)):
+use, change and share kwek and forks of it freely, including at work. Selling it, a
+modified version or a fork, or a paid service built mainly on it, is not allowed.

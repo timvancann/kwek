@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: macos-latest
+    # The same checks as before a commit locally (docs/development.md).
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: pnpm
+      - uses: taiki-e/install-action@just
+
+      # The search model is bundled as a Tauri resource, so the app crate needs it to
+      # compile. Cached on its checksums; `just model` verifies whatever it finds.
+      - uses: actions/cache@v4
+        with:
+          path: models/multilingual-e5-small
+          key: model-${{ hashFiles('models/*.sha256') }}
+      - run: just model
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check
+      # The app crate embeds the built frontend.
+      - run: pnpm build
+
+      - run: cargo fmt --check
+      - run: cargo clippy --workspace --all-targets --features kwek-core/semantic -- -D warnings
+      - run: cargo test -p kwek-core
+      # cargo test regenerates them; new, changed or missing files mean they weren't committed.
+      - name: The TypeScript view types match the Rust ones
+        run: |
+          changes="$(git status --porcelain -- src/lib/bindings)"
+          if [ -n "$changes" ]; then
+            echo "::error::src/lib/bindings is out of date; run cargo test and commit it"
+            echo "$changes"
+            exit 1
+          fi
