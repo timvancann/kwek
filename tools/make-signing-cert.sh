@@ -31,7 +31,9 @@ openssl req -x509 -newkey rsa:2048 -days 3650 -nodes -config "$tmp/cert.cnf" \
 password="$(openssl rand -hex 16)"
 openssl pkcs12 -export -legacy -out "$tmp/kwek.p12" -inkey "$tmp/key.pem" -in "$tmp/cert.pem" \
     -name "kwek local" -passout "pass:$password"
-security import "$tmp/kwek.p12" -k "$HOME/Library/Keychains/login.keychain-db" \
-    -P "$password" -T /usr/bin/codesign
+# Not exportable (-x), and no app pre-approved (no -T): macOS asks each time codesign wants
+# the key. Pre-approving codesign would let any program running as you sign itself as kwek,
+# and so read kwek's saved sign-in from the Keychain without a prompt.
+security import "$tmp/kwek.p12" -k "$HOME/Library/Keychains/login.keychain-db" -P "$password" -x
 
-echo "Done. The next \`just install\` signs kwek with it."
+echo "Done. The next \`just install\` signs kwek with it; macOS asks once per build (Allow, not Always Allow)."

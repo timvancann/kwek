@@ -8,7 +8,8 @@ model:
 
 # Build target/release/bundle/macos/kwek.app. Signed with the "kwek local" identity when
 # there is one (tools/make-signing-cert.sh), so every build is the same app to the Keychain
-# and the saved sign-in stays usable without a prompt. Without it, the build is unsigned.
+# and the saved sign-in stays usable without a prompt. macOS asks to use the signing key on
+# each build (Allow). Without the identity, the build is unsigned.
 bundle: model
     pnpm install --frozen-lockfile
     pnpm tauri build
