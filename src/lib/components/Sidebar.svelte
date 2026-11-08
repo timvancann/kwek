@@ -1,6 +1,6 @@
 <script lang="ts">
   import { api, errorText, type MeetingView, type SpaceSummary } from "$lib/api";
-  import { clock } from "$lib/format";
+  import { meetingWhen } from "$lib/format";
   import { app, type SpaceSort } from "$lib/state.svelte";
   import { toast } from "svelte-sonner";
   import CalendarIcon from "@lucide/svelte/icons/calendar";
@@ -28,13 +28,11 @@
     const t = setInterval(() => (now = Date.now() * 1000), 20_000);
     return () => clearInterval(t);
   });
-  /** The meeting running now or next, within twelve hours. */
-  const next = $derived(app.calendar.meetings.find((m) => m.endUs > now && m.startUs - now < 12 * 3600e6));
+  /** The meeting running now or next, within the coming week. */
+  const next = $derived(app.calendar.meetings.find((m) => m.endUs > now));
 
   function when(m: MeetingView): string {
-    if (m.startUs <= now) return "now";
-    const min = Math.round((m.startUs - now) / 60e6);
-    return min < 60 ? `in ${Math.max(1, min)} min` : `at ${clock(m.startUs)}`;
+    return meetingWhen(m.startUs, m.endUs, now);
   }
 
   let connecting = $state(false);
@@ -169,6 +167,17 @@
     >
       <Search class="size-4" aria-hidden="true" />
     </button>
+    {#if app.calendar.state === "ok"}
+      <button
+        class="inline-flex size-9 shrink-0 items-center justify-center rounded-lg border border-border bg-background text-muted-foreground hover:border-input hover:text-foreground"
+        aria-label="Upcoming meetings"
+        aria-keyshortcuts="Meta+Shift+J"
+        title="Upcoming meetings (⌘⇧J)"
+        onclick={() => (app.overlay = "agenda")}
+      >
+        <CalendarIcon class="size-4" aria-hidden="true" />
+      </button>
+    {/if}
   </div>
 
   <div class="min-h-0 flex-1 overflow-y-auto px-3 pb-4">
@@ -307,9 +316,9 @@
       <CalendarIcon class="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
       <button
         class="min-w-0 flex-1 text-left"
-        title={next.openUrl ? "Open in Google Calendar" : undefined}
-        disabled={!next.openUrl}
-        onclick={() => next?.openUrl && void api.openUrl(next.openUrl)}
+        title="Upcoming meetings (⌘⇧J)"
+        aria-keyshortcuts="Meta+Shift+J"
+        onclick={() => (app.overlay = "agenda")}
       >
         <span class="block truncate text-[13px] font-medium">{next.title}</span>
         <span class={cn("block text-[12px]", next.startUs <= now ? "font-medium text-accent" : "text-muted-foreground")}>{when(next)}</span>
@@ -324,6 +333,14 @@
         >
       {/if}
     </section>
+  {:else if app.calendar.state === "ok"}
+    <button
+      class="mx-3 mb-2 flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-left text-[12px] text-muted-foreground hover:bg-sidebar-hover hover:text-foreground"
+      onclick={() => (app.overlay = "agenda")}
+    >
+      <CalendarIcon class="size-4 shrink-0" aria-hidden="true" />
+      No meetings in the coming week
+    </button>
   {:else if app.calendar.state === "needsPermission" && !promptDismissed}
     <div class="mx-3 mb-2 flex items-center gap-2 rounded-lg border border-dashed border-input py-1.5 pr-1 pl-3 text-[12px] text-muted-foreground">
       <CalendarIcon class="size-4 shrink-0" aria-hidden="true" />

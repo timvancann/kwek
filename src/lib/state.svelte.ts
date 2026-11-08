@@ -41,7 +41,7 @@ function sortSpaces(xs: SpaceSummary[], sort: SpaceSort): SpaceSummary[] {
   }
   return xs;
 }
-export type Overlay = null | "switcher" | "search" | "keys";
+export type Overlay = null | "switcher" | "search" | "keys" | "agenda";
 
 const PAGE = 100;
 

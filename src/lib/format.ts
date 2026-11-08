@@ -47,6 +47,33 @@ export function ago(us: number): string {
   return dayLabel(us).toLowerCase() === "yesterday" ? "yesterday" : dayLabel(us);
 }
 
+const shortDay = new Intl.DateTimeFormat(LOCALE, { weekday: "short" });
+
+/** Days from `now` to `us` (0 the same day, 1 the next), by calendar day. */
+function daysAhead(us: number, now: number): number {
+  return Math.round((startOfDay(toDate(us)) - startOfDay(toDate(now))) / 86_400_000);
+}
+
+/** When a meeting is, seen from `now`: "now", "in 4 min", "at 14:30", "tomorrow 09:30",
+ * "Thu 10:00". */
+export function meetingWhen(startUs: number, endUs: number, now: number): string {
+  if (startUs <= now && now < endUs) return "now";
+  const min = Math.round((startUs - now) / 60e6);
+  if (min < 60) return `in ${Math.max(1, min)} min`;
+  const d = daysAhead(startUs, now);
+  if (d === 0) return `at ${clock(startUs)}`;
+  if (d === 1) return `tomorrow ${clock(startUs)}`;
+  return `${shortDay.format(toDate(startUs))} ${clock(startUs)}`;
+}
+
+/** A heading for a day of meetings: "Today", "Tomorrow", "Thursday 12 November". */
+export function agendaDay(us: number, now: number): string {
+  const d = daysAhead(us, now);
+  if (d === 0) return "Today";
+  if (d === 1) return "Tomorrow";
+  return weekday.format(toDate(us));
+}
+
 export function initials(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean);
   if (parts.length === 0) return "?";

@@ -16,6 +16,8 @@ use crate::sync::{Notification, Sink};
 use crate::ts::{self, DAY, MINUTE, Micros};
 use crate::views::{CalendarView, MeetingView};
 
+/// How far ahead meetings are fetched.
+const AHEAD: Micros = 7 * DAY;
 /// How often the meeting list is fetched again.
 const REFRESH: Duration = Duration::from_secs(5 * 60);
 /// How often reminders are checked.
@@ -44,14 +46,28 @@ impl HttpCalendar {
 #[async_trait]
 impl CalendarApi for HttpCalendar {
     async fn upcoming(&self, from: Micros, to: Micros) -> Result<Vec<MeetingView>> {
-        let url = format!(
-            // 250 is the API's page maximum, more than a day's meetings.
+        let base = format!(
+            // 250 is the API's page maximum; all-day and focus-time blocks count against it.
             "https://www.googleapis.com/calendar/v3/calendars/primary/events?singleEvents=true&orderBy=startTime&maxResults=250&timeMin={}&timeMax={}",
             q(&ts::format(from)),
             q(&ts::format(to))
         );
-        let v: Value = self.g.get(&url).await?;
-        Ok(parse_events(&v))
+        let mut out = vec![];
+        let mut token: Option<String> = None;
+        // A few pages at most: a week never needs more, and a loop must end.
+        for _ in 0..4 {
+            let url = match &token {
+                Some(t) => format!("{base}&pageToken={}", q(t)),
+                None => base.clone(),
+            };
+            let v: Value = self.g.get(&url).await?;
+            out.extend(parse_events(&v));
+            token = v.get("nextPageToken").and_then(|t| t.as_str()).map(str::to_owned);
+            if token.is_none() {
+                break;
+            }
+        }
+        Ok(out)
     }
 }
 
@@ -222,7 +238,9 @@ impl Agenda {
 
     pub async fn refresh(&self) {
         let now = ts::now();
-        let next = match self.api.upcoming(now, now + DAY).await {
+        // A week ahead: the sidebar shows what's next even on a Friday afternoon, and the
+        // agenda lists the coming days.
+        let next = match self.api.upcoming(now, now + AHEAD).await {
             Ok(meetings) => CalendarView {
                 state: "ok".into(),
                 detail: None,

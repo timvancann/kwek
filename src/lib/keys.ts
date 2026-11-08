@@ -86,6 +86,7 @@ export const bindings: Binding[] = [
   { keys: "⌘K", label: "Jump to a conversation", group: "General", run: () => (app.overlay = "switcher") },
   { keys: "⌘F", label: "Search messages", group: "General", run: () => (app.overlay = "search") },
   { keys: "⌘J", label: "Join the meeting that is starting or running", group: "General", run: () => app.joinMeeting() },
+  { keys: "⌘⇧J", label: "Upcoming meetings", group: "General", run: () => (app.overlay = "agenda") },
   { keys: "/", label: "Search messages", group: "General", run: () => (app.overlay = "search") },
   { keys: "?", label: "Show keyboard shortcuts", group: "General", run: () => (app.overlay = "keys") },
   { keys: "Esc", label: "Leave the composer, close the thread or a dialog", group: "General", run: escape },
@@ -182,6 +183,12 @@ export function handleKey(e: KeyboardEvent): boolean {
   if (e.key === "j" && e.metaKey && !e.shiftKey && !e.altKey) {
     e.preventDefault();
     app.joinMeeting();
+    return true;
+  }
+  if (e.key.toLowerCase() === "j" && e.metaKey && e.shiftKey && !e.altKey) {
+    e.preventDefault();
+    app.viewing = null;
+    app.overlay = app.overlay === "agenda" ? null : "agenda";
     return true;
   }
   // Dialogs and overlays own the keyboard while open.

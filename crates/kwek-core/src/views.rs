@@ -140,7 +140,7 @@ pub struct CalendarView {
     /// calendar access), `unavailable` (see detail).
     pub state: String,
     pub detail: Option<String>,
-    /// Running and upcoming meetings for the next day, soonest first.
+    /// Running and upcoming meetings for the coming week, soonest first.
     pub meetings: Vec<MeetingView>,
 }
 

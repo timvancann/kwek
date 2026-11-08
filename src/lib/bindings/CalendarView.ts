@@ -8,6 +8,6 @@ export type CalendarView = {
  */
 state: string, detail: string | null, 
 /**
- * Running and upcoming meetings for the next day, soonest first.
+ * Running and upcoming meetings for the coming week, soonest first.
  */
 meetings: Array<MeetingView>, };
