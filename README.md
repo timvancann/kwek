@@ -2,8 +2,10 @@
 
 *kwek* (Dutch, roughly "quack", or what you call endless chatter) is a fast, keyboard-first macOS client for Google Chat.
 
+![kwek with a conversation and its thread open](docs/images/kwek.png)
+
 - **Instant.** Your whole history lives in a local cache; live updates stream in from Google.
-- **Search that finds conversations.** "demo data" finds the chat where someone said "demo" in one message and "dataset" in the next, plus related talk found by a small model running on your Mac. Narrow down with `from:` and `in:`.
+- **Search that finds conversations.** "demo data" finds the chat where someone said "demo" in one message and "dataset" in the next, plus related talk found by a small model running on your Mac. Narrow down with `from:` and `in:` ([screenshot](docs/images/kwek-search.png)).
 - **Vim keys.** `j`/`k`, `⌘K` to jump, `⌘F` to search, `r` to reply, `?` for the rest.
 - **Yours.** Your own Google Cloud project, no server in between, no telemetry.
 
