@@ -726,7 +726,7 @@ async fn backfill_gives_up_on_a_space_that_never_progresses() {
 
 #[tokio::test]
 async fn filters_pick_lines_and_work_without_words() {
-    let f = noor_world();
+    let f = demo_world();
     f.0.lock().unwrap().messages.push(message(
         "spaces/dm",
         "mine",
@@ -816,9 +816,9 @@ async fn page_back_keeps_nothing_for_a_space_that_went() {
     assert_eq!(left, 0);
 }
 
-/// Noor said "demo" in one message and "dataset" in the next; elsewhere "dataset" comes up
+/// Ada said "demo" in one message and "dataset" in the next; elsewhere "dataset" comes up
 /// on its own. The stretch with both words ranks first.
-fn noor_world() -> Fake {
+fn demo_world() -> Fake {
     let f = world();
     {
         let mut w = f.0.lock().unwrap();
@@ -859,7 +859,7 @@ fn noor_world() -> Fake {
 
 #[tokio::test]
 async fn search_finds_words_spread_over_a_stretch() {
-    let f = noor_world();
+    let f = demo_world();
     let (e, _) = engine(&f).await;
     e.bootstrap().await.unwrap();
     let r = e.search("demo dataset", 20, 0).unwrap();
@@ -988,7 +988,7 @@ impl search::embed::Embedder for Broken {
 
 #[tokio::test]
 async fn a_broken_model_stores_nothing_and_says_so() {
-    let f = noor_world();
+    let f = demo_world();
     let e = Engine::new(
         Db::open_in_memory().unwrap(),
         Arc::new(f.clone()),
@@ -1040,7 +1040,7 @@ impl search::embed::Embedder for Picky {
 
 #[tokio::test]
 async fn a_batch_of_bad_stretches_does_not_block_the_rest() {
-    let f = noor_world();
+    let f = demo_world();
     let e = Engine::new(
         Db::open_in_memory().unwrap(),
         Arc::new(f.clone()),
@@ -1059,7 +1059,7 @@ async fn a_batch_of_bad_stretches_does_not_block_the_rest() {
 
 #[tokio::test]
 async fn a_stretch_the_model_fails_on_does_not_stop_indexing() {
-    let f = noor_world();
+    let f = demo_world();
     f.0.lock().unwrap().messages.push(message(
         "spaces/dm",
         "bad",
@@ -1091,7 +1091,7 @@ async fn a_stretch_the_model_fails_on_does_not_stop_indexing() {
 
 #[tokio::test]
 async fn search_by_meaning_finds_other_words() {
-    let f = noor_world();
+    let f = demo_world();
     let rec = Arc::new(Rec::default());
     let e = Engine::new(
         Db::open_in_memory().unwrap(),

@@ -1,8 +1,14 @@
 use crate::error::{Error, Result};
 
-/// GCP project that owns the Pub/Sub topic and the OAuth client (see docs/setup.md).
-pub const GCP_PROJECT: &str = "your-project";
-pub const PUBSUB_TOPIC: &str = "projects/your-project/topics/chat-events";
+/// GCP project that owns the Pub/Sub topic and the OAuth client (see docs/setup.md); baked
+/// in at build time by build.rs.
+pub const GCP_PROJECT: &str = env!("KWEK_GCP_PROJECT");
+pub const PUBSUB_TOPIC: &str = concat!(
+    "projects/",
+    env!("KWEK_GCP_PROJECT"),
+    "/topics/",
+    env!("KWEK_PUBSUB_TOPIC")
+);
 
 pub const SCOPES: &[&str] = &[
     "https://www.googleapis.com/auth/chat.spaces.readonly",

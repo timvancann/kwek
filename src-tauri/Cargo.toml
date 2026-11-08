@@ -2,7 +2,7 @@
 name = "kwek"
 edition.workspace = true
 version.workspace = true
-license.workspace = true
+license-file.workspace = true
 
 [lib]
 name = "kwek_app"

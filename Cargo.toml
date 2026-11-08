@@ -5,7 +5,8 @@ members = ["crates/kwek-core", "src-tauri"]
 [workspace.package]
 edition = "2024"
 version = "0.1.0"
-license = "UNLICENSED"
+# Apache-2.0 with the Commons Clause, which SPDX cannot express.
+license-file = "LICENSE"
 
 [profile.release.build-override]
 # The macOS 27 toolchain's `strip` leaves proc-macro dylibs unloadable ("mis-aligned
