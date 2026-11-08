@@ -78,7 +78,9 @@
                 <span class={cn("w-[7.25rem] shrink-0 text-[13px] whitespace-nowrap tabular-nums", live ? "font-medium text-accent" : "text-muted-foreground")}>
                   {live ? "Now" : clock(m.startUs)}{" "}<span class="text-muted-foreground">to {clock(m.endUs)}</span>
                 </span>
-                <span class="min-w-0 flex-1 truncate text-[14px]" title={m.title}>{m.title}</span>
+                <span class="min-w-0 flex-1 truncate text-[14px]" title={m.location ? `${m.title}, ${m.location}` : m.title}
+                  >{m.title}{#if m.location}<span class="text-[13px] text-muted-foreground">, {m.location}</span>{/if}</span
+                >
                 {#if m.openUrl}
                   <button
                     class="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"

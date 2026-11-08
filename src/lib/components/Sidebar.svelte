@@ -1,9 +1,10 @@
 <script lang="ts">
   import { api, errorText, type MeetingView, type SpaceSummary } from "$lib/api";
-  import { meetingWhen } from "$lib/format";
+  import { dayKey, meetingWhen } from "$lib/format";
   import { app, type SpaceSort } from "$lib/state.svelte";
   import { toast } from "svelte-sonner";
   import CalendarIcon from "@lucide/svelte/icons/calendar";
+  import MapPin from "@lucide/svelte/icons/map-pin";
   import X from "@lucide/svelte/icons/x";
   import { cn } from "$lib/utils";
   import { tick } from "svelte";
@@ -30,6 +31,14 @@
   });
   /** The meeting running now or next, within the coming week. */
   const next = $derived(app.calendar.meetings.find((m) => m.endUs > now));
+  /** How close it is, which sets how loud the sidebar is about it: a quiet line while it's
+   * days away, a card today, Join from ten minutes before (as ⌘J), green while it runs. */
+  const nearness = $derived.by(() => {
+    if (!next) return null;
+    if (next.startUs <= now) return "live";
+    if (next.startUs - 10 * 60e6 <= now) return "soon";
+    return dayKey(next.startUs) === dayKey(now) ? "today" : "later";
+  });
 
   function when(m: MeetingView): string {
     return meetingWhen(m.startUs, m.endUs, now);
@@ -311,9 +320,33 @@
     {/each}
   </div>
 
-  {#if next}
-    <section aria-label="Next meeting" class="mx-3 mb-2 flex items-center gap-2 rounded-lg border border-border bg-background py-1.5 pr-1.5 pl-3">
-      <CalendarIcon class="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+  {#if next && nearness === "later"}
+    <section aria-label="Next meeting" class="mx-3 mb-2">
+      <button
+        class="flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-left text-[12px] text-muted-foreground hover:bg-sidebar-hover"
+        title="Upcoming meetings (⌘⇧J)"
+        aria-keyshortcuts="Meta+Shift+J"
+        onclick={() => (app.overlay = "agenda")}
+      >
+        <CalendarIcon class="size-3.5 shrink-0" aria-hidden="true" />
+        <span class="inline-block shrink-0 first-letter:uppercase">{when(next)}</span>
+        <span class="min-w-0 truncate font-medium text-foreground">{next.title}</span>
+      </button>
+    </section>
+  {:else if next}
+    {@const place = next.joinUrl ? null : next.location}
+    <section
+      aria-label="Next meeting"
+      class={cn(
+        "mx-3 mb-2 flex items-center gap-2 rounded-lg border py-1.5 pr-1.5 pl-3",
+        nearness === "live" ? "border-accent/30 bg-accent-soft" : "border-border bg-background",
+      )}
+    >
+      {#if place}
+        <MapPin class="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+      {:else}
+        <CalendarIcon class="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+      {/if}
       <button
         class="min-w-0 flex-1 text-left"
         title="Upcoming meetings (⌘⇧J)"
@@ -321,9 +354,11 @@
         onclick={() => (app.overlay = "agenda")}
       >
         <span class="block truncate text-[13px] font-medium">{next.title}</span>
-        <span class={cn("block text-[12px]", next.startUs <= now ? "font-medium text-accent" : "text-muted-foreground")}>{when(next)}</span>
+        <span class="block truncate text-[12px] text-muted-foreground" title={place ?? undefined}
+          ><span class={cn(nearness === "live" && "font-medium text-accent")}>{when(next)}</span>{#if place}, {place}{/if}</span
+        >
       </button>
-      {#if next.joinUrl}
+      {#if next.joinUrl && (nearness === "live" || nearness === "soon")}
         <button
           class="shrink-0 rounded-md bg-primary px-2.5 py-1 text-[12px] font-medium text-primary-foreground hover:bg-primary/85"
           aria-label="Join {next.title}"

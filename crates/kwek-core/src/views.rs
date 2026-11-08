@@ -130,6 +130,8 @@ pub struct MeetingView {
     pub join_url: Option<String>,
     /// The event in Google Calendar.
     pub open_url: Option<String>,
+    /// Where it is (a room, an address), as written in the invite.
+    pub location: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, TS, PartialEq)]

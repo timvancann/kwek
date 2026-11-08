@@ -71,8 +71,8 @@ impl CalendarApi for HttpCalendar {
     }
 }
 
-/// The meetings worth showing: timed (not all-day), not cancelled, not declined, and not a
-/// working-location, focus-time or out-of-office block.
+/// The meetings worth showing: timed (not all-day), with other people, not cancelled, not
+/// declined, and not a working-location, focus-time or out-of-office block.
 pub fn parse_events(v: &Value) -> Vec<MeetingView> {
     let Some(items) = v.get("items").and_then(|i| i.as_array()) else {
         return vec![];
@@ -87,6 +87,7 @@ pub fn parse_events(v: &Value) -> Vec<MeetingView> {
             )
         })
         .filter(|e| my_response(e) != Some("declined"))
+        .filter(|e| with_others(e))
         .filter_map(|e| {
             let time = |k: &str| {
                 e.pointer(&format!("/{k}/dateTime"))
@@ -119,9 +120,27 @@ pub fn parse_events(v: &Value) -> Vec<MeetingView> {
                 end_us: time("end")?,
                 join_url,
                 open_url: e.get("htmlLink").and_then(|l| l.as_str()).map(str::to_owned),
+                location: e
+                    .get("location")
+                    .and_then(|l| l.as_str())
+                    // One line, for the sidebar and a notification.
+                    .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
+                    .filter(|l| !l.is_empty()),
             })
         })
         .collect()
+}
+
+/// A meeting with someone else: another guest who isn't a room, or an invite organised by
+/// someone else (whose guest list may be hidden from you). Your own blocks don't count.
+fn with_others(e: &Value) -> bool {
+    let is = |p: &Value, k: &str| p.get(k).and_then(|s| s.as_bool()) == Some(true);
+    let guest = e
+        .get("attendees")
+        .and_then(|a| a.as_array())
+        .is_some_and(|a| a.iter().any(|p| !is(p, "self") && !is(p, "resource")));
+    let invited = e.get("organizer").is_some_and(|o| !is(o, "self"));
+    guest || invited
 }
 
 fn my_response(e: &Value) -> Option<&str> {
@@ -291,15 +310,15 @@ impl Agenda {
             } else {
                 format!("{} is starting", m.title)
             };
-            let body = if m.join_url.is_some() {
-                "Join in your browser."
-            } else {
-                "No video link in the invite."
+            let body = match (&m.join_url, &m.location) {
+                (Some(_), _) => "Join in your browser.".to_owned(),
+                (None, Some(place)) => place.clone(),
+                (None, None) => "No video link in the invite.".to_owned(),
             };
             // Only a Meet link is something to join; without one, the reminder just reminds.
             self.sink.notify(Notification {
                 title,
-                body: body.into(),
+                body,
                 url: m.join_url.clone(),
                 ..Default::default()
             });
@@ -341,6 +360,9 @@ mod tests {
             "id": id, "summary": format!("Meeting {id}"), "status": "confirmed",
             "start": { "dateTime": start }, "end": { "dateTime": "2026-11-09T11:00:00+01:00" },
             "htmlLink": format!("https://calendar.google.com/event?eid={id}"),
+            "attendees": [
+                { "email": "tim@acme.nl", "self": true, "responseStatus": "accepted" },
+                { "email": "noor@acme.nl", "responseStatus": "accepted" } ],
         });
         for (k, v) in extra.as_object().unwrap() {
             e[k] = v.clone();
@@ -412,7 +434,7 @@ mod tests {
             event("colleague", "2026-11-09T10:00:00+01:00", json!({ "hangoutLink": meet,
                 "organizer": { "email": "noor@acme.nl" }, "attendees": [me("needsAction")] })),
             event("no-organizer", "2026-11-09T10:00:00+01:00", json!({ "hangoutLink": meet,
-                "attendees": [me("needsAction")] })),
+                "attendees": [me("needsAction"), { "email": "noor@acme.nl" }] })),
         ]});
         let joins: Vec<(String, bool)> = parse_events(&v)
             .into_iter()
@@ -431,6 +453,28 @@ mod tests {
     }
 
     #[test]
+    fn only_events_with_other_people_count() {
+        let me = json!({ "email": "tim@acme.nl", "self": true, "responseStatus": "accepted" });
+        let room = json!({ "email": "room-3@resource.calendar.google.com", "resource": true });
+        let v = json!({ "items": [
+            event("with-noor", "2026-11-09T10:00:00+01:00", json!({ "location": "  Room 3.14\n Building B " })),
+            event("no-guests", "2026-11-09T10:00:00+01:00", json!({ "attendees": null,
+                "organizer": { "email": "tim@acme.nl", "self": true } })),
+            event("just-me", "2026-11-09T10:00:00+01:00", json!({ "attendees": [me],
+                "organizer": { "email": "tim@acme.nl", "self": true } })),
+            event("me-and-a-room", "2026-11-09T10:00:00+01:00", json!({ "attendees": [me, room],
+                "organizer": { "email": "tim@acme.nl", "self": true } })),
+            event("hidden-guests", "2026-11-09T10:00:00+01:00", json!({ "attendees": [me],
+                "organizer": { "email": "lieke@acme.nl" }, "location": "" })),
+        ]});
+        let m = parse_events(&v);
+        let ids: Vec<&str> = m.iter().map(|x| x.id.as_str()).collect();
+        assert_eq!(ids, vec!["with-noor", "hidden-guests"]);
+        assert_eq!(m[0].location.as_deref(), Some("Room 3.14 Building B"));
+        assert_eq!(m[1].location, None, "an empty location is no location");
+    }
+
+    #[test]
     fn reminds_once_around_the_start() {
         let start = ts::parse("2026-11-09T09:00:00Z").unwrap();
         let m = vec![MeetingView {
@@ -440,6 +484,7 @@ mod tests {
             end_us: start + 15 * MINUTE,
             join_url: None,
             open_url: None,
+            location: None,
         }];
         let mut sent = HashSet::new();
         assert!(due_reminders(&m, start - 2 * MINUTE, &sent).is_empty(), "too early");

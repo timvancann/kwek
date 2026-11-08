@@ -11,4 +11,8 @@ joinUrl: string | null,
 /**
  * The event in Google Calendar.
  */
-openUrl: string | null, };
+openUrl: string | null, 
+/**
+ * Where it is (a room, an address), as written in the invite.
+ */
+location: string | null, };

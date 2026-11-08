@@ -54,10 +54,13 @@ function daysAhead(us: number, now: number): number {
   return Math.round((startOfDay(toDate(us)) - startOfDay(toDate(now))) / 86_400_000);
 }
 
-/** When a meeting is, seen from `now`: "now", "in 4 min", "at 14:30", "tomorrow 09:30",
- * "Thu 10:00". */
+/** When a meeting is, seen from `now`: "now, 25 min left", "now, until 15:30", "in 4 min",
+ * "at 14:30", "tomorrow 09:30", "Thu 10:00". */
 export function meetingWhen(startUs: number, endUs: number, now: number): string {
-  if (startUs <= now && now < endUs) return "now";
+  if (startUs <= now && now < endUs) {
+    const left = Math.ceil((endUs - now) / 60e6);
+    return left < 60 ? `now, ${left} min left` : `now, until ${clock(endUs)}`;
+  }
   const min = Math.round((startUs - now) / 60e6);
   if (min < 60) return `in ${Math.max(1, min)} min`;
   const d = daysAhead(startUs, now);
