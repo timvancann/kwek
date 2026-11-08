@@ -27,7 +27,23 @@ pub trait ChatApi: Send + Sync {
     async fn get_space(&self, name: &str) -> Result<Space>;
     async fn list_messages(&self, space: &str, opts: &ListMessages) -> Result<Page<Message>>;
     async fn get_message(&self, name: &str) -> Result<Message>;
-    async fn create_message(&self, space: &str, text: &str, thread: Option<&str>, client_id: &str) -> Result<Message>;
+    /// `attachments` are `attachmentDataRef`s from [`ChatApi::upload_attachment`].
+    async fn create_message(
+        &self,
+        space: &str,
+        text: &str,
+        thread: Option<&str>,
+        client_id: &str,
+        attachments: &[serde_json::Value],
+    ) -> Result<Message>;
+    /// Uploads a file to attach to a message in `space`; returns its `attachmentDataRef`.
+    async fn upload_attachment(
+        &self,
+        space: &str,
+        file_name: &str,
+        content_type: &str,
+        data: &[u8],
+    ) -> Result<serde_json::Value>;
     async fn update_message_text(&self, name: &str, text: &str) -> Result<Message>;
     async fn delete_message(&self, name: &str) -> Result<()>;
     async fn create_reaction(&self, message: &str, emoji: &Emoji) -> Result<Reaction>;
@@ -53,6 +69,22 @@ impl HttpChat {
     pub fn new(g: Google) -> Self {
         Self { g }
     }
+}
+
+/// The body of `messages.create`. An image on its own is a message too: the text is left out
+/// when empty rather than sent as "".
+fn message_body(text: &str, thread: Option<&str>, attachments: &[serde_json::Value]) -> serde_json::Value {
+    let mut body = json!({});
+    if !text.is_empty() {
+        body["text"] = json!(text);
+    }
+    if !attachments.is_empty() {
+        body["attachment"] = attachments.iter().map(|r| json!({ "attachmentDataRef": r })).collect();
+    }
+    if let Some(t) = thread {
+        body["thread"] = json!({ "name": t });
+    }
+    body
 }
 
 /// `spaces/S/threads/T` -> path under `users/me` for read state.
@@ -97,14 +129,36 @@ impl ChatApi for HttpChat {
         self.g.get(&format!("{BASE}/{name}")).await
     }
 
-    async fn create_message(&self, space: &str, text: &str, thread: Option<&str>, client_id: &str) -> Result<Message> {
+    async fn create_message(
+        &self,
+        space: &str,
+        text: &str,
+        thread: Option<&str>,
+        client_id: &str,
+        attachments: &[serde_json::Value],
+    ) -> Result<Message> {
         let mut url = format!("{BASE}/{space}/messages?messageId={}", q(client_id));
-        let mut body = json!({ "text": text });
-        if let Some(t) = thread {
+        if thread.is_some() {
             url += "&messageReplyOption=REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD";
-            body["thread"] = json!({ "name": t });
         }
-        self.g.post(&url, &body).await
+        self.g.post(&url, &message_body(text, thread, attachments)).await
+    }
+
+    async fn upload_attachment(
+        &self,
+        space: &str,
+        file_name: &str,
+        content_type: &str,
+        data: &[u8],
+    ) -> Result<serde_json::Value> {
+        let url = format!("https://chat.googleapis.com/upload/v1/{space}/attachments:upload?uploadType=multipart");
+        let resp: serde_json::Value = self
+            .g
+            .upload(&url, &json!({ "filename": file_name }), content_type, data)
+            .await?;
+        resp.get("attachmentDataRef")
+            .cloned()
+            .ok_or_else(|| crate::error::Error::Decode("upload answered without an attachmentDataRef".into()))
     }
 
     async fn update_message_text(&self, name: &str, text: &str) -> Result<Message> {
@@ -185,4 +239,19 @@ pub fn older_than_filter(create_time: &str) -> String {
 
 pub fn thread_filter(thread: &str) -> String {
     format!("thread.name = {thread}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn message_body_carries_text_images_and_thread() {
+        let r = json!({ "resourceName": "r1", "attachmentUploadToken": "t" });
+        assert_eq!(message_body("hi", None, &[]), json!({ "text": "hi" }));
+        assert_eq!(
+            message_body("", Some("spaces/s/threads/t"), std::slice::from_ref(&r)),
+            json!({ "attachment": [{ "attachmentDataRef": r }], "thread": { "name": "spaces/s/threads/t" } })
+        );
+    }
 }

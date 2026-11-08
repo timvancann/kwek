@@ -19,6 +19,9 @@ struct World {
     events: Vec<SpaceEvent>,
     created: Vec<(String, String, Option<String>)>,
     fail_create: bool,
+    /// (space, file name, content type, bytes) per upload.
+    uploads: Vec<(String, String, String, Vec<u8>)>,
+    fail_upload: bool,
     /// Runs inside the next list_messages call: something else happening mid-request.
     on_list: Option<Box<dyn FnOnce() + Send>>,
     /// A space whose every page is empty yet claims there is more.
@@ -95,11 +98,44 @@ impl ChatApi for Fake {
             .cloned()
             .ok_or(Error::Other("nf".into()))
     }
-    async fn create_message(&self, space: &str, text: &str, thread: Option<&str>, client_id: &str) -> Result<Message> {
+    async fn upload_attachment(
+        &self,
+        space: &str,
+        file_name: &str,
+        content_type: &str,
+        data: &[u8],
+    ) -> Result<serde_json::Value> {
+        let mut w = self.0.lock().unwrap();
+        if w.fail_upload {
+            return Err(Error::Network("offline".into()));
+        }
+        w.uploads
+            .push((space.into(), file_name.into(), content_type.into(), data.to_vec()));
+        let n = w.uploads.len();
+        Ok(serde_json::json!({ "resourceName": format!("uploaded/{n}"), "attachmentUploadToken": "tok" }))
+    }
+    async fn create_message(
+        &self,
+        space: &str,
+        text: &str,
+        thread: Option<&str>,
+        client_id: &str,
+        attachments: &[serde_json::Value],
+    ) -> Result<Message> {
         let mut w = self.0.lock().unwrap();
         if w.fail_create {
             return Err(Error::Network("offline".into()));
         }
+        let attachment: Vec<Attachment> = attachments
+            .iter()
+            .map(|r| Attachment {
+                content_type: Some("image/png".into()),
+                attachment_data_ref: Some(AttachmentDataRef {
+                    resource_name: r["resourceName"].as_str().map(str::to_owned),
+                }),
+                ..Default::default()
+            })
+            .collect();
         w.created.push((space.into(), text.into(), thread.map(str::to_owned)));
         let n = w.messages.len();
         let m = Message {
@@ -118,6 +154,7 @@ impl ChatApi for Fake {
             }),
             thread_reply: Some(thread.is_some()),
             client_assigned_message_id: Some(client_id.into()),
+            attachment: (!attachment.is_empty()).then_some(attachment),
             ..Default::default()
         };
         w.messages.push(m.clone());
@@ -509,7 +546,10 @@ async fn send_is_optimistic_then_replaced_by_server_row() {
     let f = world();
     let (e, rec) = engine(&f).await;
     e.bootstrap().await.unwrap();
-    let v = e.send_message("spaces/team", None, "shipping it").await.unwrap();
+    let v = e
+        .send_message("spaces/team", None, "shipping it", vec![])
+        .await
+        .unwrap();
     assert_eq!(v.local_state, "pending");
     assert!(v.name.starts_with("pending:"));
     for _ in 0..50 {
@@ -534,7 +574,10 @@ async fn failed_send_stays_visible_and_retries() {
     let (e, _) = engine(&f).await;
     e.bootstrap().await.unwrap();
     f.0.lock().unwrap().fail_create = true;
-    let v = e.send_message("spaces/team", None, "offline msg").await.unwrap();
+    let v = e
+        .send_message("spaces/team", None, "offline msg", vec![])
+        .await
+        .unwrap();
     let mut state = String::new();
     for _ in 0..50 {
         state = e.message_view(&v.name).unwrap().unwrap().local_state;
@@ -557,6 +600,155 @@ async fn failed_send_stays_visible_and_retries() {
         "pending row renamed to the server name"
     );
     assert_eq!(f.0.lock().unwrap().created.len(), 1);
+}
+
+async fn until(mut done: impl FnMut() -> bool) {
+    for _ in 0..100 {
+        if done() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+#[tokio::test]
+async fn images_upload_with_the_message_and_survive_a_retry() {
+    let f = world();
+    let (e, _) = engine(&f).await;
+    e.bootstrap().await.unwrap();
+    let dir = std::env::temp_dir().join(format!("kwek-outbox-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("photo.png");
+    std::fs::write(&path, b"\x89PNG fake").unwrap();
+    let file = Outgoing {
+        path: path.clone(),
+        name: "photo.png".into(),
+        content_type: "image/png".into(),
+    };
+
+    // The upload fails first: the message stays, failed, with its image named.
+    f.0.lock().unwrap().fail_upload = true;
+    let v = e.send_message("spaces/team", None, "", vec![file]).await.unwrap();
+    assert_eq!(v.attachments.len(), 1);
+    assert_eq!(v.attachments[0].name, "photo.png");
+    until(|| e.message_view(&v.name).unwrap().unwrap().local_state == "failed").await;
+    assert_eq!(e.message_view(&v.name).unwrap().unwrap().local_state, "failed");
+    assert!(path.exists(), "the staged file waits for the retry");
+    assert!(f.0.lock().unwrap().created.is_empty(), "no message without its image");
+
+    // Retried: uploaded, attached, and the staged copy is gone.
+    f.0.lock().unwrap().fail_upload = false;
+    e.retry_send(&v.name).await.unwrap();
+    until(|| e.message_view(&v.name).unwrap().is_none()).await;
+    let w = f.0.lock().unwrap();
+    assert_eq!(w.uploads.len(), 1);
+    assert_eq!(
+        (
+            w.uploads[0].1.as_str(),
+            w.uploads[0].2.as_str(),
+            w.uploads[0].3.as_slice()
+        ),
+        ("photo.png", "image/png", b"\x89PNG fake".as_slice())
+    );
+    drop(w);
+    let sent = e.get_messages("spaces/team", None, 50).unwrap();
+    let mine = sent
+        .iter()
+        .find(|m| !m.attachments.is_empty())
+        .expect("the sent message");
+    assert_eq!(mine.attachments[0].kind, "image");
+    assert!(!path.exists());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[tokio::test]
+async fn unsent_messages_keep_their_staged_files_from_the_sweep() {
+    let f = world();
+    let (e, _) = engine(&f).await;
+    e.bootstrap().await.unwrap();
+    let path = std::env::temp_dir().join(format!("kwek-keep-{}", uuid::Uuid::new_v4()));
+    std::fs::write(&path, b"x").unwrap();
+    assert!(e.staged_in_use().unwrap().is_empty());
+    f.0.lock().unwrap().fail_upload = true;
+    let file = Outgoing {
+        path: path.clone(),
+        name: "x.png".into(),
+        content_type: "image/png".into(),
+    };
+    let v = e.send_message("spaces/team", None, "", vec![file]).await.unwrap();
+    until(|| e.message_view(&v.name).unwrap().unwrap().local_state == "failed").await;
+    assert_eq!(
+        e.staged_in_use().unwrap(),
+        vec![path.clone()],
+        "a failed send still needs it"
+    );
+    f.0.lock().unwrap().fail_upload = false;
+    e.retry_send(&v.name).await.unwrap();
+    until(|| e.message_view(&v.name).unwrap().is_none()).await;
+    assert!(e.staged_in_use().unwrap().is_empty(), "delivered: nothing left to keep");
+}
+
+#[tokio::test]
+async fn a_retry_after_a_landed_send_does_not_upload_again() {
+    let f = world();
+    let (e, _) = engine(&f).await;
+    e.bootstrap().await.unwrap();
+    let path = std::env::temp_dir().join(format!("kwek-landed-{}", uuid::Uuid::new_v4()));
+    std::fs::write(&path, b"x").unwrap();
+    let file = Outgoing {
+        path: path.clone(),
+        name: "x.png".into(),
+        content_type: "image/png".into(),
+    };
+    // The message lands at Google but the answer is lost: the row is marked failed.
+    f.0.lock().unwrap().fail_create = true;
+    let v = e.send_message("spaces/team", None, "", vec![file]).await.unwrap();
+    until(|| e.message_view(&v.name).unwrap().unwrap().local_state == "failed").await;
+    let client_id: String =
+        e.db.with(|c| Ok(c.query_row("SELECT client_id FROM message WHERE name = ?1", [&v.name], |r| r.get(0))?))
+            .unwrap();
+    {
+        let mut w = f.0.lock().unwrap();
+        w.fail_create = false;
+        w.messages.push(message(
+            "spaces/team",
+            &client_id,
+            ME,
+            "2024-02-01T00:00:00Z",
+            "",
+            "landed",
+            false,
+        ));
+    }
+    let uploads_before = f.0.lock().unwrap().uploads.len();
+    e.retry_send(&v.name).await.unwrap();
+    until(|| e.message_view(&v.name).unwrap().is_none()).await;
+    assert!(
+        e.message_view(&v.name).unwrap().is_none(),
+        "the landed message replaced the row"
+    );
+    assert_eq!(f.0.lock().unwrap().uploads.len(), uploads_before, "no second upload");
+    assert!(f.0.lock().unwrap().created.is_empty(), "no second message");
+}
+
+#[tokio::test]
+async fn discarding_a_failed_send_removes_its_staged_files() {
+    let f = world();
+    let (e, _) = engine(&f).await;
+    e.bootstrap().await.unwrap();
+    let path = std::env::temp_dir().join(format!("kwek-staged-{}.png", uuid::Uuid::new_v4()));
+    std::fs::write(&path, b"x").unwrap();
+    f.0.lock().unwrap().fail_upload = true;
+    let file = Outgoing {
+        path: path.clone(),
+        name: "x.png".into(),
+        content_type: "image/png".into(),
+    };
+    let v = e.send_message("spaces/team", None, "look", vec![file]).await.unwrap();
+    until(|| e.message_view(&v.name).unwrap().unwrap().local_state == "failed").await;
+    e.discard_failed(&v.name).await.unwrap();
+    assert!(e.message_view(&v.name).unwrap().is_none());
+    assert!(!path.exists());
 }
 
 #[tokio::test]

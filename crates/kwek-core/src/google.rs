@@ -13,6 +13,8 @@ use crate::auth::TokenManager;
 use crate::error::{Error, Result};
 
 const MAX_IN_FLIGHT: usize = 4;
+/// Uploads take their own slots: a slow one must not hold up sync and text sends.
+const MAX_UPLOADS: usize = 2;
 const MAX_ATTEMPTS: u32 = 6;
 
 #[derive(Clone)]
@@ -20,6 +22,7 @@ pub struct Google {
     http: reqwest::Client,
     tokens: Arc<TokenManager>,
     limiter: Arc<Semaphore>,
+    uploads: Arc<Semaphore>,
 }
 
 impl Google {
@@ -28,6 +31,7 @@ impl Google {
             http,
             tokens,
             limiter: Arc::new(Semaphore::new(MAX_IN_FLIGHT)),
+            uploads: Arc::new(Semaphore::new(MAX_UPLOADS)),
         }
     }
 
@@ -60,10 +64,24 @@ impl Google {
         self.send(Method::GET, url, None, None).await
     }
 
+    /// A media upload (`uploadType=multipart`): JSON metadata and the file's bytes in one
+    /// multipart/related body, with the same auth, limit and retries as every other call.
+    pub async fn upload<T: DeserializeOwned>(
+        &self,
+        url: &str,
+        metadata: &Value,
+        content_type: &str,
+        data: &[u8],
+    ) -> Result<T> {
+        let (body, ct) = multipart_related(metadata, content_type, data);
+        let bytes = self.send(Method::POST, url, Some(Body::Raw(&body, &ct)), None).await?.0;
+        Ok(serde_json::from_slice(&bytes)?)
+    }
+
     /// A long-poll POST (Pub/Sub pull): outside the in-flight limit, which is for Chat quota,
     /// with its own timeout. A timeout means "nothing arrived" and returns `{}`.
     pub async fn long_poll<T: DeserializeOwned>(&self, url: &str, body: &Value, wait: Duration) -> Result<T> {
-        match self.send(Method::POST, url, Some(body), Some(wait)).await {
+        match self.send(Method::POST, url, Some(Body::Json(body)), Some(wait)).await {
             Ok((bytes, _)) if !bytes.is_empty() => Ok(serde_json::from_slice(&bytes)?),
             Ok(_) | Err(Error::Timeout) => Ok(serde_json::from_str("{}")?),
             Err(e) => Err(e),
@@ -71,7 +89,7 @@ impl Google {
     }
 
     async fn json<T: DeserializeOwned>(&self, method: Method, url: &str, body: Option<&Value>) -> Result<T> {
-        let bytes = self.send(method, url, body, None).await?.0;
+        let bytes = self.send(method, url, body.map(Body::Json), None).await?.0;
         if bytes.is_empty() {
             return Ok(serde_json::from_str("{}")?);
         }
@@ -84,7 +102,7 @@ impl Google {
         &self,
         method: Method,
         url: &str,
-        body: Option<&Value>,
+        body: Option<Body<'_>>,
         long_poll: Option<Duration>,
     ) -> Result<(Vec<u8>, Option<String>)> {
         let mut refreshed = false;
@@ -93,14 +111,25 @@ impl Google {
             attempt += 1;
             // A permit per attempt, released before any backoff sleep, so one throttled call
             // does not hold up everything else.
-            let permit = match long_poll {
-                None => Some(self.limiter.acquire().await.expect("limiter closed")),
-                Some(_) => None,
+            let upload = matches!(body, Some(Body::Raw(..)));
+            let permit = match (long_poll, upload) {
+                (Some(_), _) => None,
+                (None, true) => Some(self.uploads.acquire().await.expect("limiter closed")),
+                (None, false) => Some(self.limiter.acquire().await.expect("limiter closed")),
             };
             let token = self.tokens.access_token().await?;
             let mut req = self.http.request(method.clone(), url).bearer_auth(&token);
-            if let Some(b) = body {
-                req = req.json(b);
+            match body {
+                Some(Body::Json(b)) => req = req.json(b),
+                Some(Body::Raw(bytes, content_type)) => {
+                    // Time to send it even on a slow uplink: a minute plus a second per 256 KB.
+                    let secs = 60 + (bytes.len() / (256 * 1024)) as u64;
+                    req = req
+                        .header(reqwest::header::CONTENT_TYPE, content_type)
+                        .timeout(Duration::from_secs(secs))
+                        .body(bytes.to_vec())
+                }
+                None => {}
             }
             if let Some(wait) = long_poll {
                 req = req.timeout(wait);
@@ -108,7 +137,9 @@ impl Google {
             let resp = match req.send().await {
                 Ok(r) => r,
                 Err(e) if long_poll.is_some() && e.is_timeout() => return Err(Error::Timeout),
-                Err(e) if attempt < 3 && (e.is_timeout() || e.is_connect()) => {
+                // An upload that timed out would only time out again; one that never connected
+                // is worth another go.
+                Err(e) if attempt < 3 && (e.is_connect() || (e.is_timeout() && !upload)) => {
                     drop(permit);
                     tokio::time::sleep(backoff(attempt)).await;
                     continue;
@@ -146,6 +177,26 @@ impl Google {
             return Err(api_error(status, &text));
         }
     }
+}
+
+#[derive(Clone, Copy)]
+enum Body<'a> {
+    Json(&'a Value),
+    /// Bytes and their content type.
+    Raw(&'a [u8], &'a str),
+}
+
+/// A multipart/related body: the JSON metadata part, then the media part. Returns the body
+/// and its content type (with the boundary).
+fn multipart_related(metadata: &Value, content_type: &str, data: &[u8]) -> (Vec<u8>, String) {
+    let boundary = format!("kwek-{}", uuid::Uuid::new_v4().simple());
+    let mut body = Vec::with_capacity(data.len() + 512);
+    body.extend_from_slice(format!("--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n").as_bytes());
+    body.extend_from_slice(metadata.to_string().as_bytes());
+    body.extend_from_slice(format!("\r\n--{boundary}\r\nContent-Type: {content_type}\r\n\r\n").as_bytes());
+    body.extend_from_slice(data);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    (body, format!("multipart/related; boundary={boundary}"))
 }
 
 /// Exponential backoff with full jitter: random in [0, min(30 s, 500 ms * 2^attempt)].
@@ -190,6 +241,17 @@ pub fn q(v: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn multipart_related_body_has_both_parts() {
+        let (body, ct) = multipart_related(&serde_json::json!({"filename": "a.png"}), "image/png", b"\x89PNG");
+        let boundary = ct.strip_prefix("multipart/related; boundary=").unwrap();
+        let text = String::from_utf8_lossy(&body);
+        assert!(text.starts_with(&format!("--{boundary}\r\nContent-Type: application/json")));
+        assert!(text.contains(r#"{"filename":"a.png"}"#));
+        assert!(text.contains("Content-Type: image/png\r\n\r\n\u{FFFD}PNG"));
+        assert!(text.ends_with(&format!("\r\n--{boundary}--\r\n")));
+    }
 
     #[test]
     fn parses_google_error_envelope() {

@@ -21,11 +21,12 @@
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
         "zoomHotkeysEnabled": true,
+        "dragDropEnabled": false,
         "backgroundColor": "#ffffff"
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' media: http://media.localhost data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src ipc: http://ipc.localhost; font-src 'self'"
+      "csp": "default-src 'self'; img-src 'self' media: http://media.localhost data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src ipc: http://ipc.localhost; font-src 'self'"
     }
   },
   "bundle": {

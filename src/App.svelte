@@ -19,6 +19,19 @@
     mq.addEventListener("change", (e) => (app.narrow = e.matches));
   });
 
+  // Files dropped outside a composer would make the webview open them in place of kwek.
+  onMount(() => {
+    const swallow = (e: DragEvent) => {
+      if (e.dataTransfer?.types.includes("Files")) e.preventDefault();
+    };
+    window.addEventListener("dragover", swallow);
+    window.addEventListener("drop", swallow);
+    return () => {
+      window.removeEventListener("dragover", swallow);
+      window.removeEventListener("drop", swallow);
+    };
+  });
+
   onMount(() => {
     void app.init();
     const onKey = (e: KeyboardEvent) => handleKey(e);

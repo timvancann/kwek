@@ -12,7 +12,8 @@ A fast, keyboard-first Google Chat client for macOS. *Kwek* is Dutch for roughly
 - Every space, DM and thread from a local cache: switching and scrolling never wait.
 - Live updates for messages, edits, reactions and read state, in step with the web and
   your phone.
-- Send, reply in a thread, edit, delete, react. Notifications for DMs and mentions.
+- Send, reply in a thread, edit, delete, react. Paste, drop or pick images to send them.
+- Notifications for DMs and mentions, with sound; a quiet pop-up while kwek is in front.
 
 **Find**
 
@@ -91,8 +92,7 @@ kwek stands on these projects:
 
 - **Dark mode.** Every colour is already a named token, so it starts as a second set of
   values; then it needs checking screen by screen.
-- **Attachments.** Paste or drop a file to send it. Today kwek only shows and downloads
-  them.
+- **Other files.** Send PDFs and documents the way images go today.
 - **Team builds.** One build your colleagues can open without a client file of their
   own, with a topic per person so nobody's messages pass through anyone else's
   subscription.

@@ -340,11 +340,11 @@ class AppState {
 
   // ------------------------------------------------------------- actions
 
-  async send(text: string, thread: string | null) {
+  async send(text: string, thread: string | null, attachments: string[] = []) {
     const space = thread ? this.thread?.space : this.current;
     if (!space) return;
     try {
-      const pending = await api.sendMessage(space, thread, text);
+      const pending = await api.sendMessage(space, thread, text, attachments);
       this.onUpsert({ space, messages: [pending] });
     } catch (e) {
       toast.error(errorText(e));

@@ -4,8 +4,9 @@
 mod commands;
 mod notify;
 
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use kwek_core::auth::{TokenManager, default_store};
 use kwek_core::chat::HttpChat;
@@ -15,7 +16,7 @@ use kwek_core::events::EventsClient;
 use kwek_core::google::Google;
 use kwek_core::people::HttpPeople;
 use kwek_core::search::embed::{E5, Embedder};
-use kwek_core::sync::{Engine, Notification, Sink};
+use kwek_core::sync::{Engine, Notification, Outgoing, Sink};
 use kwek_core::views::{AuthState, MessageView, SpaceSummary, SyncStatus};
 use serde_json::json;
 use tauri::http::{Response, header};
@@ -26,6 +27,8 @@ pub struct AppState {
     pub media_dir: PathBuf,
     pub data_dir: PathBuf,
     pub setup: SharedSetup,
+    /// Images added to a composer, by id, until they are sent or removed.
+    pub staged: Mutex<HashMap<String, Outgoing>>,
     _log_guard: tracing_appender::non_blocking::WorkerGuard,
 }
 
@@ -69,6 +72,31 @@ impl Sink for TauriSink {
     fn badge(&self, count: u32) {
         if let Some(w) = self.app.get_webview_window("main") {
             let _ = w.set_badge_count(if count > 0 { Some(count as i64) } else { None });
+        }
+    }
+}
+
+/// Removes images staged in a composer that was never sent (kwek quit first). Files an
+/// unsent message still needs stay, for its retry.
+fn sweep_outbox(dir: &std::path::Path, engine: &Engine) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let keep = match engine.staged_in_use() {
+        Ok(k) => k,
+        Err(e) => {
+            tracing::warn!("outbox sweep skipped: {e}");
+            return;
+        }
+    };
+    // By file name (a uuid), so a data folder reached by another path still matches.
+    let keep: Vec<_> = keep
+        .iter()
+        .filter_map(|p| p.file_name().map(|n| n.to_owned()))
+        .collect();
+    for entry in entries.flatten() {
+        if !keep.contains(&entry.file_name()) {
+            let _ = std::fs::remove_file(entry.path());
         }
     }
 }
@@ -164,6 +192,7 @@ pub fn run() {
                 Some(media_dir.clone()),
                 Some(embedder),
             );
+            sweep_outbox(&data_dir.join("outbox"), &engine);
             tauri::async_runtime::spawn(engine.clone().run());
             tauri::async_runtime::spawn(engine.clone().backfill());
             tauri::async_runtime::spawn(engine.clone().index());
@@ -172,6 +201,7 @@ pub fn run() {
                 media_dir,
                 data_dir,
                 setup,
+                staged: Mutex::new(HashMap::new()),
                 _log_guard: guard,
             });
             tracing::info!("kwek started");
@@ -192,6 +222,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::auth_status,
+            commands::stage_attachment,
+            commands::unstage_attachment,
             commands::google_setup,
             commands::set_google_setup,
             commands::login,

@@ -25,8 +25,15 @@ export const api = {
     invoke<MessageView[]>("get_messages", { space, before, limit }),
   loadOlder: (space: string) => invoke<number>("load_older", { space }),
   getThread: (thread: string) => invoke<MessageView[]>("get_thread", { thread }),
-  sendMessage: (space: string, thread: string | null, text: string) =>
-    invoke<MessageView>("send_message", { space, thread, text }),
+  /** `attachments` are ids from `stageAttachment`. */
+  sendMessage: (space: string, thread: string | null, text: string, attachments: string[] = []) =>
+    invoke<MessageView>("send_message", { space, thread, text, attachments }),
+  /** Keeps an image for sending; the raw bytes cross as the request body. Returns its id. */
+  stageAttachment: async (file: File) =>
+    invoke<string>("stage_attachment", new Uint8Array(await file.arrayBuffer()), {
+      headers: { "x-name": encodeURIComponent(file.name), "x-type": file.type },
+    }),
+  unstageAttachment: (id: string) => invoke<void>("unstage_attachment", { id }),
   retrySend: (name: string) => invoke<void>("retry_send", { name }),
   discardFailed: (name: string) => invoke<void>("discard_failed", { name }),
   editMessage: (name: string, text: string) => invoke<void>("edit_message", { name, text }),

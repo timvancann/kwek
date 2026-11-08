@@ -5,7 +5,7 @@ use std::sync::PoisonError;
 
 use kwek_core::Error;
 use kwek_core::config::GoogleSetup;
-use kwek_core::sync::Engine;
+use kwek_core::sync::{Engine, Outgoing};
 use kwek_core::views::{AuthState, GoogleSetupView, MessageView, SearchResult, SpaceSummary, SyncStatus, UserRef};
 use tauri::{AppHandle, State};
 use tauri_plugin_opener::OpenerExt;
@@ -153,22 +153,108 @@ pub async fn get_thread(state: State<'_, AppState>, thread: String) -> Res<Vec<M
     Ok(cached)
 }
 
+/// Well under Google Chat's 200 MB: an image is read into memory to upload, and a big one
+/// on a slow connection would take minutes.
+const MAX_ATTACHMENT: usize = 50 * 1024 * 1024;
+
+/// Keeps an image the user added to the composer in the outbox folder until it is sent.
+/// The body is the raw file; `x-name` (percent-encoded) and `x-type` describe it. Returns an
+/// id for `send_message`: the webview never names a path to upload.
+#[tauri::command]
+pub async fn stage_attachment(state: State<'_, AppState>, request: tauri::ipc::Request<'_>) -> Res<String> {
+    let tauri::ipc::InvokeBody::Raw(data) = request.body() else {
+        return Err("Expected the file's bytes.".into());
+    };
+    let header = |k: &str| {
+        request
+            .headers()
+            .get(k)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_owned()
+    };
+    let name = percent_encoding::percent_decode_str(&header("x-name"))
+        .decode_utf8_lossy()
+        .trim()
+        .to_owned();
+    let content_type = header("x-type");
+    if !content_type.starts_with("image/") {
+        return Err("kwek can only send images for now.".into());
+    }
+    if data.len() > MAX_ATTACHMENT {
+        return Err("That image is over 50 MB, too big to send from kwek.".into());
+    }
+    let name = if name.is_empty() { "image".to_owned() } else { name };
+    let id = uuid::Uuid::new_v4().simple().to_string();
+    let dir = state.data_dir.join("outbox");
+    let path = dir.join(&id);
+    let data = data.clone();
+    let p = path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        std::fs::create_dir_all(&dir)?;
+        std::fs::write(&p, data)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| format!("Could not keep the image for sending: {e}"))?;
+    state.staged.lock().unwrap().insert(
+        id.clone(),
+        Outgoing {
+            path,
+            name,
+            content_type,
+        },
+    );
+    Ok(id)
+}
+
+/// The user took an image out of the composer.
+#[tauri::command]
+pub fn unstage_attachment(state: State<'_, AppState>, id: String) {
+    if let Some(f) = state.staged.lock().unwrap().remove(&id) {
+        let _ = std::fs::remove_file(f.path);
+    }
+}
+
 #[tauri::command]
 pub async fn send_message(
     state: State<'_, AppState>,
     space: String,
     thread: Option<String>,
     text: String,
+    attachments: Option<Vec<String>>,
 ) -> Res<MessageView> {
     let text = text.trim_end().to_owned();
-    if text.trim().is_empty() {
+    let ids = attachments.unwrap_or_default();
+    if text.trim().is_empty() && ids.is_empty() {
         return Err("Nothing to send.".into());
     }
-    state
+    let files = {
+        let mut staged = state.staged.lock().unwrap();
+        // All or nothing: check every id before taking any out of the staging map.
+        if ids.iter().any(|id| !staged.contains_key(id)) {
+            return Err("An image is no longer attached. Add it again.".into());
+        }
+        ids.iter()
+            .filter_map(|id| staged.remove(id).map(|f| (id.clone(), f)))
+            .collect::<Vec<_>>()
+    };
+    let outgoing = files.iter().map(|(_, f)| f.clone()).collect();
+    match state
         .engine
-        .send_message(&space, thread.as_deref(), &text)
+        .send_message(&space, thread.as_deref(), &text, outgoing)
         .await
-        .map_err(msg)
+    {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            // Nothing was queued, and the composer has already let go of the images: the
+            // staged copies have no one left to use them.
+            for (_, f) in files {
+                let _ = std::fs::remove_file(f.path);
+            }
+            Err(msg(e))
+        }
+    }
 }
 
 #[tauri::command]

@@ -297,7 +297,7 @@ async fn main() -> anyhow::Result<()> {
                 );
             }
             let id = format!("client-{}", uuid::Uuid::new_v4());
-            let m = chat.create_message(&space, &text, None, &id).await?;
+            let m = chat.create_message(&space, &text, None, &id, &[]).await?;
             println!("{:#?}", m);
         }
         "get" => {

@@ -210,6 +210,16 @@ pub fn insert_pending(
     Ok(name)
 }
 
+/// Files going out with a pending message: `attachments` (names and types, so the pending
+/// message shows them) and `raw` (where the staged files are, for delivery and retries).
+pub fn set_pending_files(c: &Connection, name: &str, attachments: &str, raw: &str) -> Result<()> {
+    c.execute(
+        "UPDATE message SET attachments = ?2, raw = ?3 WHERE name = ?1 AND local_state != 'synced'",
+        params![name, attachments, raw],
+    )?;
+    Ok(())
+}
+
 pub fn set_local_state(c: &Connection, name: &str, state: &str) -> Result<()> {
     c.execute(
         "UPDATE message SET local_state = ?2 WHERE name = ?1",

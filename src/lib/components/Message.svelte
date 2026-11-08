@@ -148,9 +148,11 @@
                 <img src={a.mediaUrl} alt={a.name} loading="lazy" class="block max-h-72 max-w-[min(360px,100%)] object-contain" draggable="false" />
               </button>
             {:else}
+              {@const sending = !a.openUrl && !a.resource && m.localState !== "synced"}
               <button
                 tabindex={inner}
-                class="inline-flex max-w-xs items-center gap-1.5 rounded-md border border-border bg-muted px-2 py-1 text-left hover:border-accent"
+                class="inline-flex max-w-xs items-center gap-1.5 rounded-md border border-border bg-muted px-2 py-1 text-left enabled:hover:border-accent"
+                disabled={sending}
                 onclick={() => (a.openUrl ? api.openUrl(a.openUrl) : a.resource && download(a.resource, a.name))}
               >
                 {#if a.kind === "drive"}<HardDrive class="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />{:else}<Paperclip
@@ -158,7 +160,12 @@
                     aria-hidden="true"
                   />{/if}
                 <span class="truncate">{a.name}</span>
-                <span class="sr-only">{a.kind === "drive" ? ", open in Google Drive" : ", save to Downloads"}</span>
+                {#if sending}
+                  <!-- A failed message says so once, with Retry, below. -->
+                  {#if m.localState === "pending"}<span class="shrink-0 text-[12px] text-muted-foreground">sending</span>{/if}
+                {:else}
+                  <span class="sr-only">{a.kind === "drive" ? ", open in Google Drive" : ", save to Downloads"}</span>
+                {/if}
               </button>
             {/if}
           {/each}

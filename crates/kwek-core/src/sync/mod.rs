@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use futures::StreamExt;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use tokio::sync::{Mutex, Notify};
 
 use crate::auth::TokenManager;
@@ -42,6 +42,14 @@ const POLL_EVERY: Duration = Duration::from_secs(60);
 const RETRY_LIVE_EVERY: Duration = Duration::from_secs(10 * 60);
 /// `spaceEvents.list` only reaches back 28 days; stay clear of the edge.
 const EVENT_RETENTION: Micros = 27 * DAY;
+
+/// A file going out with a message, staged on disk until the message is delivered.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Outgoing {
+    pub path: std::path::PathBuf,
+    pub name: String,
+    pub content_type: String,
+}
 
 #[derive(Debug, Clone)]
 pub struct Notification {
@@ -1444,18 +1452,40 @@ impl Engine {
 
     // ---------------------------------------------------------------- writes
 
-    pub async fn send_message(self: &Arc<Self>, space: &str, thread: Option<&str>, text: &str) -> Result<MessageView> {
+    /// `files` are staged on disk; they are uploaded when the message is delivered and
+    /// removed once it is.
+    pub async fn send_message(
+        self: &Arc<Self>,
+        space: &str,
+        thread: Option<&str>,
+        text: &str,
+        files: Vec<Outgoing>,
+    ) -> Result<MessageView> {
         let client_id = format!("client-{}", uuid::Uuid::new_v4().simple());
         let me = self.me();
-        let (space_o, thread_o, text_o, cid) = (
+        let (space_o, thread_o, text_o, cid, files_o) = (
             space.to_owned(),
             thread.map(str::to_owned),
             text.to_owned(),
             client_id.clone(),
+            files.clone(),
         );
         let name = self
             .db
-            .call(move |c| write::insert_pending(c, &space_o, thread_o.as_deref(), &text_o, &cid, &me, ts::now()))
+            .call(move |c| {
+                let tx = c.transaction()?;
+                let name = write::insert_pending(&tx, &space_o, thread_o.as_deref(), &text_o, &cid, &me, ts::now())?;
+                if !files_o.is_empty() {
+                    let shown: Vec<serde_json::Value> = files_o
+                        .iter()
+                        .map(|f| serde_json::json!({ "contentName": f.name, "contentType": f.content_type }))
+                        .collect();
+                    let raw = serde_json::json!({ "outbox": files_o });
+                    write::set_pending_files(&tx, &name, &serde_json::to_string(&shown)?, &raw.to_string())?;
+                }
+                tx.commit()?;
+                Ok(name)
+            })
             .await?;
         let view = self
             .message_views_by_name(std::slice::from_ref(&name))?
@@ -1466,20 +1496,60 @@ impl Engine {
         let this = self.clone();
         let (space, thread, text) = (space.to_owned(), thread.map(str::to_owned), text.to_owned());
         tokio::spawn(async move {
-            this.deliver(&space, thread.as_deref(), &text, &client_id, &name).await;
+            this.deliver(&space, thread.as_deref(), &text, &client_id, &name, &files, false)
+                .await;
         });
         Ok(view)
     }
 
-    async fn deliver(&self, space: &str, thread: Option<&str>, text: &str, client_id: &str, pending: &str) {
-        let created = match self.chat.create_message(space, text, thread, client_id).await {
-            // An earlier attempt (retried after a timeout or 5xx) already landed: the client
-            // ID is taken, so fetch that message instead of reporting a failure.
-            Err(e) if e.is_status("ALREADY_EXISTS") => {
-                self.chat.get_message(&format!("{space}/messages/{client_id}")).await
+    // The message's parts plus how to treat it; a struct for one private call adds nothing.
+    #[allow(clippy::too_many_arguments)]
+    async fn deliver(
+        &self,
+        space: &str,
+        thread: Option<&str>,
+        text: &str,
+        client_id: &str,
+        pending: &str,
+        files: &[Outgoing],
+        retry: bool,
+    ) {
+        let existing = format!("{space}/messages/{client_id}");
+        let created = async {
+            // A retry with images may follow an attempt that did land (the answer got lost):
+            // look before uploading them all again.
+            if retry && !files.is_empty() {
+                match self.chat.get_message(&existing).await {
+                    Ok(m) => return Ok(m),
+                    Err(e) => tracing::debug!("not sent before ({e}); uploading the images"),
+                }
             }
-            other => other,
-        };
+            // Files first: the message is created with them, in one go.
+            let mut refs = Vec::with_capacity(files.len());
+            for f in files {
+                let data = tokio::fs::read(&f.path).await.map_err(|e| {
+                    Error::Other(format!(
+                        "{} is no longer in kwek's outbox ({e}). Discard this message and add the image again.",
+                        f.name
+                    ))
+                })?;
+                refs.push(
+                    self.chat
+                        .upload_attachment(space, &f.name, &f.content_type, &data)
+                        .await?,
+                );
+            }
+            match self.chat.create_message(space, text, thread, client_id, &refs).await {
+                // An earlier attempt (retried after a timeout or 5xx) already landed: the
+                // client ID is taken, so fetch that message instead of reporting a failure.
+                Err(e) if e.is_status("ALREADY_EXISTS") => self.chat.get_message(&existing).await,
+                other => other,
+            }
+        }
+        .await;
+        if created.is_ok() {
+            remove_staged(files);
+        }
         match created {
             Ok(mut m) => {
                 if m.client_assigned_message_id.is_none() {
@@ -1527,6 +1597,7 @@ impl Engine {
                 .await?
         };
         let client_id = client_id.ok_or_else(|| Error::Other("no client id".into()))?;
+        let files = self.pending_files(pending).await?;
         let p = pending.to_owned();
         self.db.call(move |c| write::set_local_state(c, &p, "pending")).await?;
         if let Ok(v) = self.message_views_by_name(&[pending.to_owned()]) {
@@ -1536,16 +1607,59 @@ impl Engine {
         let pending = pending.to_owned();
         tokio::spawn(async move {
             let text = row.text.clone().unwrap_or_default();
-            this.deliver(&row.space, row.thread.as_deref(), &text, &client_id, &pending)
-                .await;
+            this.deliver(
+                &row.space,
+                row.thread.as_deref(),
+                &text,
+                &client_id,
+                &pending,
+                &files,
+                true,
+            )
+            .await;
         });
         Ok(())
+    }
+
+    /// Staged files that unsent messages (pending or failed) still need; everything else in
+    /// the outbox is left over from a composer that was never sent.
+    pub fn staged_in_use(&self) -> Result<Vec<std::path::PathBuf>> {
+        self.db.with(|c| {
+            let mut st = c.prepare("SELECT raw FROM message WHERE local_state != 'synced'")?;
+            let raws: Vec<String> = st.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+            Ok(raws
+                .iter()
+                .filter_map(|r| serde_json::from_str::<serde_json::Value>(r).ok())
+                .filter_map(|v| serde_json::from_value::<Vec<Outgoing>>(v.get("outbox")?.clone()).ok())
+                .flatten()
+                .map(|f| f.path)
+                .collect())
+        })
+    }
+
+    /// The staged files of a pending message (none for a text-only one).
+    async fn pending_files(&self, pending: &str) -> Result<Vec<Outgoing>> {
+        let p = pending.to_owned();
+        let raw: Option<String> = self
+            .db
+            .call(move |c| {
+                Ok(
+                    c.query_row("SELECT raw FROM message WHERE name = ?1", [&p], |r| r.get(0))
+                        .optional()?,
+                )
+            })
+            .await?;
+        Ok(raw
+            .and_then(|r| serde_json::from_str::<serde_json::Value>(&r).ok())
+            .and_then(|v| serde_json::from_value(v.get("outbox")?.clone()).ok())
+            .unwrap_or_default())
     }
 
     pub async fn discard_failed(&self, pending: &str) -> Result<()> {
         let p = pending.to_owned();
         let row = self.db.call(move |c| read::message(c, &p)).await?;
         if let Some(r) = row.filter(|r| r.local_state == "failed") {
+            remove_staged(&self.pending_files(&r.name).await?);
             let n = r.name.clone();
             self.db.call(move |c| write::delete_row(c, &n)).await?;
             self.sink.messages_deleted(&r.space, vec![r.name]);
@@ -1822,6 +1936,17 @@ fn is_config_error(e: &Error) -> bool {
         || e.is_status("PERMISSION_DENIED")
         || e.is_status("NOT_FOUND")
         || e.is_status("FAILED_PRECONDITION")
+}
+
+/// Staged files are only a copy for the outbox; once delivered or discarded they go.
+fn remove_staged(files: &[Outgoing]) {
+    for f in files {
+        if let Err(e) = std::fs::remove_file(&f.path)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!("could not remove a staged file: {e}");
+        }
+    }
 }
 
 fn short(e: &Error) -> String {
