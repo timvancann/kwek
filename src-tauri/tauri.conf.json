@@ -40,6 +40,9 @@
       "icons/icon.icns",
       "icons/icon.png"
     ],
+    "resources": {
+      "../models/multilingual-e5-small/*": "models/multilingual-e5-small/"
+    },
     "macOS": {
       "minimumSystemVersion": "13.0"
     }

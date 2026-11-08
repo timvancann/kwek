@@ -19,6 +19,11 @@ struct World {
     events: Vec<SpaceEvent>,
     created: Vec<(String, String, Option<String>)>,
     fail_create: bool,
+    /// Runs inside the next list_messages call: something else happening mid-request.
+    on_list: Option<Box<dyn FnOnce() + Send>>,
+    /// A space whose every page is empty yet claims there is more.
+    hollow: Option<String>,
+    list_calls: usize,
 }
 
 #[derive(Default, Clone)]
@@ -47,7 +52,18 @@ impl ChatApi for Fake {
             .ok_or(Error::Other("nf".into()))
     }
     async fn list_messages(&self, space: &str, o: &ListMessages) -> Result<Page<Message>> {
-        let w = self.0.lock().unwrap();
+        let hook = self.0.lock().unwrap().on_list.take();
+        if let Some(h) = hook {
+            h();
+        }
+        let mut w = self.0.lock().unwrap();
+        w.list_calls += 1;
+        if w.hollow.as_deref() == Some(space) {
+            return Ok(Page {
+                items: vec![],
+                next_page_token: Some("more".into()),
+            });
+        }
         let mut v: Vec<Message> = w.messages.iter().filter(|m| m.space_name() == space).cloned().collect();
         if let Some(f) = &o.filter {
             if let Some(rest) = f.strip_prefix("createTime < \"") {
@@ -332,6 +348,7 @@ async fn engine(f: &Fake) -> (Arc<Engine>, Arc<Rec>) {
         None,
         rec.clone(),
         None,
+        None,
     );
     e.ensure_identity().await.unwrap();
     (e, rec)
@@ -461,7 +478,16 @@ async fn interrupted_send_becomes_failed_on_restart() {
     let db = Db::open_in_memory().unwrap();
     db.with(|c| write::insert_pending(c, "spaces/team", None, "half sent", "client-x", ME, 5).map(|_| ()))
         .unwrap();
-    let e = Engine::new(db, Arc::new(f.clone()), Arc::new(FakePeople), None, None, rec, None);
+    let e = Engine::new(
+        db,
+        Arc::new(f.clone()),
+        Arc::new(FakePeople),
+        None,
+        None,
+        rec,
+        None,
+        None,
+    );
     assert_eq!(
         e.message_view("pending:client-x").unwrap().unwrap().local_state,
         "failed"
@@ -561,24 +587,6 @@ async fn mark_read_clears_unread_locally() {
 }
 
 #[tokio::test]
-async fn search_with_filters_and_snippets() {
-    let f = world();
-    let (e, _) = engine(&f).await;
-    e.bootstrap().await.unwrap();
-    let r = e.search("deploy", 20, 0).unwrap();
-    assert_eq!(r.hits.len(), 1);
-    assert_eq!(r.hits[0].space_name, "Team");
-    assert!(r.hits[0].snippet.iter().any(|p| p.hit && p.text == "deploy"));
-    // Prefix match while typing, and filters.
-    assert_eq!(e.search("depl", 20, 0).unwrap().hits.len(), 1);
-    assert_eq!(e.search("from:ada psst", 20, 0).unwrap().hits.len(), 1);
-    assert_eq!(e.search("in:team psst", 20, 0).unwrap().hits.len(), 0);
-    assert_eq!(e.search("after:2024-01-02 deploy", 20, 0).unwrap().hits.len(), 0);
-    // FTS syntax in user input is literal, never an error.
-    assert!(e.search("NEAR( \"x OR", 20, 0).is_ok());
-}
-
-#[tokio::test]
 async fn load_older_pages_back_and_marks_complete() {
     let f = world();
     {
@@ -651,11 +659,487 @@ async fn repeated_initial_fetch_keeps_paged_history() {
     assert_eq!(after, before);
 }
 
-#[test]
-fn search_parser() {
-    let (q, f) = parse_search("from:ada in:tech before:2024-06-01 deploy green");
-    assert_eq!(q, "\"deploy\" \"green\"*");
-    assert_eq!(f.from.as_deref(), Some("ada"));
-    assert_eq!(f.space.as_deref(), Some("tech"));
-    assert!(f.before_us.is_some());
+#[tokio::test]
+async fn backfill_downloads_all_history() {
+    let f = world();
+    {
+        let mut w = f.0.lock().unwrap();
+        for i in 0..1200 {
+            let at = ts::format(t("2023-01-01T00:00:00Z") + i as i64 * MINUTE);
+            w.messages.push(message(
+                "spaces/team",
+                &format!("old{i}"),
+                "users/ada",
+                &at,
+                "old",
+                &format!("o{i}"),
+                false,
+            ));
+        }
+    }
+    let (e, _) = engine(&f).await;
+    e.bootstrap().await.unwrap();
+    e.backfill_pass().await.unwrap();
+    let left = e.db.with(|c| search::history_left(c)).unwrap();
+    assert_eq!(left, 0, "every space complete");
+    let cached: i64 =
+        e.db.with(|c| {
+            Ok(
+                c.query_row("SELECT count(*) FROM message WHERE space = 'spaces/team'", [], |r| {
+                    r.get(0)
+                })?,
+            )
+        })
+        .unwrap();
+    assert_eq!(cached, 1203);
+    // Nothing left to do: a second pass makes no calls that change anything.
+    e.backfill_pass().await.unwrap();
+}
+
+#[tokio::test]
+async fn backfill_gives_up_on_a_space_that_never_progresses() {
+    let f = world();
+    let (e, _) = engine(&f).await;
+    e.bootstrap().await.unwrap();
+    f.0.lock().unwrap().hollow = Some("spaces/team".into());
+    e.db.with(|c| {
+        c.execute(
+            "UPDATE space SET history_complete = 0, low_water_us = NULL WHERE name = 'spaces/team'",
+            [],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    f.0.lock().unwrap().list_calls = 0;
+    tokio::time::timeout(Duration::from_secs(10), e.backfill_pass())
+        .await
+        .expect("backfill must not page forever")
+        .unwrap();
+    assert_eq!(
+        f.0.lock().unwrap().list_calls,
+        3,
+        "tried, then gave up after three stalls"
+    );
+    let (_, complete) = e.db.with(|c| read::history_bounds(c, "spaces/team")).unwrap();
+    assert!(!complete, "giving up does not pretend the history is there");
+}
+
+#[tokio::test]
+async fn filters_pick_lines_and_work_without_words() {
+    let f = noor_world();
+    f.0.lock().unwrap().messages.push(message(
+        "spaces/dm",
+        "mine",
+        ME,
+        "2024-01-05T09:06:00Z",
+        "my dataset is ready too",
+        "cmine",
+        false,
+    ));
+    let (e, _) = engine(&f).await;
+    e.bootstrap().await.unwrap();
+    // The stretch holds both people's "dataset"; under from: only Ada's lines show.
+    let r = e.search("from:users/ada dataset", 20, 0).unwrap();
+    assert!(!r.hits.is_empty());
+    for h in &r.hits {
+        assert!(h.lines.iter().all(|l| l.sender.name == "users/ada"), "{:?}", h.lines);
+    }
+    // Filters alone list the matching stretches, newest first.
+    let r = e.search("from:users/ada", 20, 0).unwrap();
+    assert!(!r.hits.is_empty() && r.hits.iter().all(|h| h.words && !h.meaning));
+    assert!(r.hits.windows(2).all(|w| w[0].last_us >= w[1].last_us));
+    let r = e.search("in:spaces/dm", 20, 0).unwrap();
+    assert!(!r.hits.is_empty() && r.hits.iter().all(|h| h.space == "spaces/dm"));
+    assert!(e.search("in:spaces/nowhere", 20, 0).unwrap().hits.is_empty());
+    assert!(
+        e.search("from:a_a", 20, 0).unwrap().hits.is_empty(),
+        "typed filters are literal, not LIKE patterns (a_a would match Ada)"
+    );
+    // Suggestions for from: are the people who wrote, most recent first.
+    let people = e.list_senders().unwrap();
+    assert_eq!(people.first().map(|u| u.name.as_str()), Some("users/ada"));
+}
+
+fn with_old_history(f: &Fake, n: usize) {
+    let mut w = f.0.lock().unwrap();
+    for i in 0..n {
+        let at = ts::format(t("2023-01-01T00:00:00Z") + i as i64 * MINUTE);
+        w.messages.push(message(
+            "spaces/team",
+            &format!("old{i}"),
+            "users/ada",
+            &at,
+            "old",
+            &format!("o{i}"),
+            false,
+        ));
+    }
+}
+
+#[tokio::test]
+async fn page_back_leaves_a_mark_that_moved_meanwhile() {
+    let f = world();
+    with_old_history(&f, 300);
+    let (e, _) = engine(&f).await;
+    e.bootstrap().await.unwrap();
+    let moved = t("2024-01-01T11:59:00Z");
+    let db = e.db.clone();
+    f.0.lock().unwrap().on_list = Some(Box::new(move || {
+        db.with(|c| write::set_low_water(c, "spaces/team", moved)).unwrap();
+    }));
+    e.load_older("spaces/team").await.unwrap();
+    let (low, complete) = e.db.with(|c| read::history_bounds(c, "spaces/team")).unwrap();
+    assert_eq!(low, Some(moved), "a page fetched below the old mark proves nothing now");
+    assert!(!complete);
+}
+
+#[tokio::test]
+async fn page_back_keeps_nothing_for_a_space_that_went() {
+    let f = world();
+    with_old_history(&f, 300);
+    let (e, _) = engine(&f).await;
+    e.bootstrap().await.unwrap();
+    let db = e.db.clone();
+    f.0.lock().unwrap().on_list = Some(Box::new(move || {
+        db.with(|c| write::delete_space(c, "spaces/team")).unwrap();
+    }));
+    e.load_older("spaces/team").await.unwrap();
+    let left: i64 =
+        e.db.with(|c| {
+            Ok(
+                c.query_row("SELECT count(*) FROM message WHERE space = 'spaces/team'", [], |r| {
+                    r.get(0)
+                })?,
+            )
+        })
+        .unwrap();
+    assert_eq!(left, 0);
+}
+
+/// Noor said "demo" in one message and "dataset" in the next; elsewhere "dataset" comes up
+/// on its own. The stretch with both words ranks first.
+fn noor_world() -> Fake {
+    let f = world();
+    {
+        let mut w = f.0.lock().unwrap();
+        let add = |w: &mut World, id: &str, at: &str, text: &str| {
+            w.messages.push(message(
+                "spaces/dm",
+                id,
+                "users/ada",
+                at,
+                text,
+                &format!("c{id}"),
+                false,
+            ));
+        };
+        add(
+            &mut w,
+            "c1",
+            "2024-01-05T09:00:00Z",
+            "can we show the client a demo next week?",
+        );
+        add(
+            &mut w,
+            "c2",
+            "2024-01-05T09:04:00Z",
+            "I'll put together a dataset with fake customers",
+        );
+        add(
+            &mut w,
+            "c3",
+            "2024-01-08T14:00:00Z",
+            "the churn dataset has new columns",
+        );
+        add(&mut w, "c4", "2024-01-09T14:00:00Z", "another dataset question");
+        add(&mut w, "c5", "2024-01-10T14:00:00Z", "the demo went well");
+    }
+    f
+}
+
+#[tokio::test]
+async fn search_finds_words_spread_over_a_stretch() {
+    let f = noor_world();
+    let (e, _) = engine(&f).await;
+    e.bootstrap().await.unwrap();
+    let r = e.search("demo dataset", 20, 0).unwrap();
+    let top = &r.hits[0];
+    assert!(top.words && !top.meaning);
+    assert_eq!(top.anchor, "spaces/dm/messages/c1");
+    assert_eq!(top.lines.len(), 2, "both messages with a match are shown");
+    assert!(top.lines[1].parts.iter().any(|p| p.hit && p.text == "dataset"));
+    assert_eq!(top.thread, None);
+    assert_eq!(top.space_name, "Ada Lovelace");
+    // Stretches with one of the words still come, below.
+    assert_eq!(r.hits.len(), 4);
+    // Prefix match on every longer word: "data" finds "dataset".
+    assert!(e.search("data demo", 20, 0).unwrap().hits[0].anchor == "spaces/dm/messages/c1");
+}
+
+#[tokio::test]
+async fn search_filters_and_literal_syntax() {
+    let f = world();
+    let (e, _) = engine(&f).await;
+    e.bootstrap().await.unwrap();
+    let r = e.search("deploy", 20, 0).unwrap();
+    assert_eq!(r.hits.len(), 1);
+    assert_eq!(r.hits[0].space_name, "Team");
+    assert!(r.hits[0].lines[0].parts.iter().any(|p| p.hit && p.text == "deploy"));
+    assert_eq!(e.search("depl", 20, 0).unwrap().hits.len(), 1);
+    assert_eq!(e.search("from:ada psst", 20, 0).unwrap().hits.len(), 1);
+    assert_eq!(e.search("from:nobody psst", 20, 0).unwrap().hits.len(), 0);
+    assert_eq!(e.search("in:team psst", 20, 0).unwrap().hits.len(), 0);
+    assert_eq!(e.search("after:2024-01-02 deploy", 20, 0).unwrap().hits.len(), 0);
+    assert!(e.search("NEAR( \"x OR", 20, 0).is_ok());
+    // A reply is found in its thread's stretch, which opens the thread.
+    let r = e.search("reply", 20, 0).unwrap();
+    assert_eq!(r.hits[0].thread.as_deref(), Some("spaces/team/threads/t1"));
+    assert_eq!(r.hits[0].anchor, "spaces/team/messages/2");
+}
+
+#[tokio::test]
+async fn search_follows_edits_and_deletes() {
+    let f = world();
+    let (e, _) = engine(&f).await;
+    e.bootstrap().await.unwrap();
+    assert_eq!(e.search("deploy", 20, 0).unwrap().hits.len(), 1);
+    e.db.with(|c| {
+        apply(
+            c,
+            &[Event::MessageDeleted {
+                name: "spaces/team/messages/3".into(),
+                delete_time: Some("2024-01-02T00:00:00Z".into()),
+            }],
+            ME,
+        )
+        .map(|_| ())
+    })
+    .unwrap();
+    assert_eq!(e.search("deploy", 20, 0).unwrap().hits.len(), 0);
+}
+
+/// Words map to concepts; texts sharing a concept are close in meaning.
+struct Concepts;
+
+impl Concepts {
+    fn vec(text: &str) -> Vec<f32> {
+        let concepts: [&[&str]; 3] = [
+            &["demo", "sample", "showcase", "pitch"],
+            &["lunch", "food", "pizza"],
+            &["invoice", "billing"],
+        ];
+        let lower = text.to_lowercase();
+        let mut v: Vec<f32> = concepts
+            .iter()
+            .map(|words| words.iter().filter(|w| lower.contains(*w)).count() as f32)
+            .collect();
+        v.push(0.1);
+        search::embed::normalise(v)
+    }
+}
+
+impl search::embed::Embedder for Concepts {
+    fn model(&self) -> &str {
+        "concepts"
+    }
+    fn available(&self) -> bool {
+        true
+    }
+    fn ready(&self) -> bool {
+        true
+    }
+    fn load(&self) -> Result<()> {
+        Ok(())
+    }
+    fn passages(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        if texts.iter().any(|t| t.contains("unembeddable")) {
+            return Err(Error::Other("model failed".into()));
+        }
+        Ok(texts.iter().map(|t| Concepts::vec(t)).collect())
+    }
+    fn query(&self, text: &str) -> Result<Vec<f32>> {
+        Ok(Concepts::vec(text))
+    }
+}
+
+/// A model that fails on everything.
+struct Broken;
+
+impl search::embed::Embedder for Broken {
+    fn model(&self) -> &str {
+        "broken"
+    }
+    fn available(&self) -> bool {
+        true
+    }
+    fn ready(&self) -> bool {
+        true
+    }
+    fn load(&self) -> Result<()> {
+        Ok(())
+    }
+    fn passages(&self, _: &[String]) -> Result<Vec<Vec<f32>>> {
+        Err(Error::Other("model failed".into()))
+    }
+    fn query(&self, _: &str) -> Result<Vec<f32>> {
+        Err(Error::Other("model failed".into()))
+    }
+}
+
+#[tokio::test]
+async fn a_broken_model_stores_nothing_and_says_so() {
+    let f = noor_world();
+    let e = Engine::new(
+        Db::open_in_memory().unwrap(),
+        Arc::new(f.clone()),
+        Arc::new(FakePeople),
+        None,
+        None,
+        Arc::new(Rec::default()),
+        None,
+        Some(Arc::new(Broken)),
+    );
+    e.bootstrap().await.unwrap();
+    assert!(e.index_pass().await.is_err());
+    let r = e.search("demo", 20, 0).unwrap();
+    assert_eq!(
+        r.meaning.indexed, 0,
+        "nothing marked as indexed, so the next pass retries"
+    );
+    assert!(r.meaning.total > 0);
+    assert!(!r.hits.is_empty(), "keyword search still works");
+}
+
+/// A working model that fails on every real stretch.
+struct Picky;
+
+impl search::embed::Embedder for Picky {
+    fn model(&self) -> &str {
+        "picky"
+    }
+    fn available(&self) -> bool {
+        true
+    }
+    fn ready(&self) -> bool {
+        true
+    }
+    fn load(&self) -> Result<()> {
+        Ok(())
+    }
+    fn passages(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        if texts.iter().all(|t| t.contains("probe")) {
+            Ok(texts.iter().map(|t| Concepts::vec(t)).collect())
+        } else {
+            Err(Error::Other("cannot read this".into()))
+        }
+    }
+    fn query(&self, text: &str) -> Result<Vec<f32>> {
+        Ok(Concepts::vec(text))
+    }
+}
+
+#[tokio::test]
+async fn a_batch_of_bad_stretches_does_not_block_the_rest() {
+    let f = noor_world();
+    let e = Engine::new(
+        Db::open_in_memory().unwrap(),
+        Arc::new(f.clone()),
+        Arc::new(FakePeople),
+        None,
+        None,
+        Arc::new(Rec::default()),
+        None,
+        Some(Arc::new(Picky)),
+    );
+    e.bootstrap().await.unwrap();
+    e.index_pass().await.unwrap();
+    let r = e.search("demo", 20, 0).unwrap();
+    assert_eq!(r.meaning.indexed, r.meaning.total, "stored empty, so indexing moves on");
+}
+
+#[tokio::test]
+async fn a_stretch_the_model_fails_on_does_not_stop_indexing() {
+    let f = noor_world();
+    f.0.lock().unwrap().messages.push(message(
+        "spaces/dm",
+        "bad",
+        "users/ada",
+        "2024-03-01T09:00:00Z",
+        "this one is unembeddable by the model",
+        "cbad",
+        false,
+    ));
+    let e = Engine::new(
+        Db::open_in_memory().unwrap(),
+        Arc::new(f.clone()),
+        Arc::new(FakePeople),
+        None,
+        None,
+        Arc::new(Rec::default()),
+        None,
+        Some(Arc::new(Concepts)),
+    );
+    e.bootstrap().await.unwrap();
+    e.index_pass().await.unwrap();
+    let r = e.search("showcase", 20, 0).unwrap();
+    assert_eq!(
+        r.meaning.indexed, r.meaning.total,
+        "every stretch got a vector, empty or not"
+    );
+    assert!(r.hits.iter().any(|h| h.anchor == "spaces/dm/messages/c1"));
+}
+
+#[tokio::test]
+async fn search_by_meaning_finds_other_words() {
+    let f = noor_world();
+    let rec = Arc::new(Rec::default());
+    let e = Engine::new(
+        Db::open_in_memory().unwrap(),
+        Arc::new(f.clone()),
+        Arc::new(FakePeople),
+        None,
+        None,
+        rec,
+        None,
+        Some(Arc::new(Concepts)),
+    );
+    e.bootstrap().await.unwrap();
+    e.index_pass().await.unwrap();
+    let r = e.search("showcase", 20, 0).unwrap();
+    assert!(r.meaning.ready && r.meaning.indexed == r.meaning.total && r.meaning.total > 0);
+    let names: Vec<&str> = r.hits.iter().map(|h| h.anchor.as_str()).collect();
+    assert!(names.contains(&"spaces/dm/messages/c1"), "{names:?}");
+    assert!(r.hits.iter().all(|h| h.meaning && !h.words));
+    // Keyword hits and meaning hits merge; a stretch with both ranks first.
+    let r = e.search("demo", 20, 0).unwrap();
+    assert!(r.hits[0].words && r.hits[0].meaning);
+
+    // An edit re-indexes: the old vector goes, the new text gets one.
+    e.db.with(|c| {
+        let mut m = message(
+            "spaces/dm",
+            "c5",
+            "users/ada",
+            "2024-01-10T14:00:00Z",
+            "pizza on friday",
+            "cc5",
+            false,
+        );
+        m.last_update_time = Some("2024-01-11T00:00:00Z".into());
+        apply(c, &[Event::MessageUpserted(m)], ME).map(|_| ())
+    })
+    .unwrap();
+    e.index_pass().await.unwrap();
+    let r = e.search("food", 20, 0).unwrap();
+    assert_eq!(r.hits[0].anchor, "spaces/dm/messages/c5");
+    let orphans: i64 =
+        e.db.with(|c| {
+            Ok(c.query_row(
+                "SELECT count(*) FROM embedding WHERE hash NOT IN (SELECT hash FROM chunk)",
+                [],
+                |r| r.get(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(orphans, 0);
 }

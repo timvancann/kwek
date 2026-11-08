@@ -163,11 +163,52 @@ class AppState {
       void api.setOpen(space, this.thread?.name ?? null);
     }
     if (thread) await this.openThread(thread);
-    if (message) {
+    if (message && (await this.reach(space, message))) {
       this.jumpTo = message;
       this.selected = message;
       this.zone = "messages";
     }
+  }
+
+  /** Opens a thread with one of its messages selected and focused (a search hit). */
+  async openInThread(space: string, thread: string, message: string) {
+    await this.open(space, null, thread);
+    if (this.thread?.name !== thread) return;
+    this.threadSelected = message;
+    this.zone = "thread";
+    this.focusNonce++;
+  }
+
+  /** Extends the loaded list back from the cache until it holds `message` (a search hit or
+   * notification can point far back), so the list can scroll to it. False when it is not
+   * there (deleted, or further back than the list may grow); says so. */
+  private async reach(space: string, message: string): Promise<boolean> {
+    // The list is not virtualised; past this it gets slow to render.
+    const max = 3000;
+    const has = () => (this.messages[space] ?? []).some((m) => m.name === message);
+    if (has()) return true;
+    this.loadingOlder = true;
+    this.say("Loading older messages");
+    try {
+      while (this.current === space && !has()) {
+        const list = this.messages[space] ?? [];
+        if (list.length === 0 || list.length >= max) break;
+        const older = await api.getMessages(space, list[0].createUs, 500);
+        if (older.length === 0 || this.current !== space) break;
+        // Merge into the live list: messages may have arrived meanwhile.
+        const cur = this.messages[space] ?? [];
+        const names = new Set(cur.map((m) => m.name));
+        this.messages[space] = [...older.filter((m) => !names.has(m.name)), ...cur];
+      }
+    } catch (e) {
+      toast.error(errorText(e));
+      return false;
+    } finally {
+      this.loadingOlder = false;
+    }
+    if (has()) return true;
+    if (this.current === space) toast.error("That message is too far back to open here.");
+    return false;
   }
 
   async loadOlder() {

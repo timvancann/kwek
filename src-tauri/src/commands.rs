@@ -172,6 +172,11 @@ pub async fn search(state: State<'_, AppState>, query: String, limit: u32, offse
 }
 
 #[tauri::command]
+pub async fn list_senders(state: State<'_, AppState>) -> Res<Vec<UserRef>> {
+    blocking(&state, move |e| e.list_senders()).await
+}
+
+#[tauri::command]
 pub async fn list_members(state: State<'_, AppState>, space: String) -> Res<Vec<UserRef>> {
     blocking(&state, move |e| e.list_members(&space)).await
 }

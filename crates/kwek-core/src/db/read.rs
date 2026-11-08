@@ -177,6 +177,22 @@ pub fn message(c: &Connection, name: &str) -> Result<Option<MessageRow>> {
     Ok(c.query_row(&sql, [name], msg_row).optional()?)
 }
 
+/// Live messages by row id, oldest first.
+pub fn messages_by_id(c: &Connection, ids: &[i64]) -> Result<Vec<MessageRow>> {
+    if ids.is_empty() {
+        return Ok(vec![]);
+    }
+    let sql = format!(
+        "SELECT {MSG_COLS} FROM message WHERE id IN ({}) AND local_state != 'ghost' AND delete_us IS NULL
+         ORDER BY create_us, id",
+        placeholders(ids.len())
+    );
+    let mut st = c.prepare(&sql)?;
+    Ok(st
+        .query_map(params_from_iter(ids), msg_row)?
+        .collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
 pub fn messages_by_name(c: &Connection, names: &[String]) -> Result<Vec<MessageRow>> {
     if names.is_empty() {
         return Ok(vec![]);
@@ -339,6 +355,20 @@ pub fn members(c: &Connection, space: &str) -> Result<Vec<UserRow>> {
     Ok(st.query_map([space], user_row)?.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
+/// People with at least one searchable message (sent, not deleted, with text), most recent
+/// writer first.
+pub fn senders(c: &Connection) -> Result<Vec<UserRow>> {
+    let mut st = c.prepare(
+        "SELECT u.name, u.display_name, u.email, u.avatar_url
+         FROM user u JOIN (SELECT sender, max(create_us) AS last FROM message
+                           WHERE delete_us IS NULL AND local_state = 'synced'
+                             AND text IS NOT NULL AND text != ''
+                           GROUP BY sender) m ON m.sender = u.name
+         ORDER BY m.last DESC",
+    )?;
+    Ok(st.query_map([], user_row)?.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
 pub fn member_names(c: &Connection, space: &str) -> Result<Vec<String>> {
     let mut st = c.prepare("SELECT member FROM membership WHERE space = ?1")?;
     Ok(st
@@ -407,40 +437,6 @@ pub struct SearchFilter {
     pub space: Option<String>,
     pub before_us: Option<Micros>,
     pub after_us: Option<Micros>,
-}
-
-/// Full-text search; returns rows plus a snippet with `\u{1}`/`\u{2}` around hits.
-pub fn search(
-    c: &Connection,
-    fts_query: &str,
-    f: &SearchFilter,
-    limit: u32,
-    offset: u32,
-) -> Result<Vec<(MessageRow, String)>> {
-    let cols = MSG_COLS
-        .split(',')
-        .map(|s| format!("m.{}", s.trim()))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let sql = format!(
-        "SELECT {cols}, snippet(message_fts, 0, char(1), char(2), '…', 16)
-         FROM message_fts JOIN message m ON m.id = message_fts.rowid
-         LEFT JOIN user u ON u.name = m.sender
-         LEFT JOIN space s ON s.name = m.space
-         LEFT JOIN user peer ON peer.name = s.dm_peer
-         WHERE message_fts MATCH ?1 AND m.delete_us IS NULL AND m.local_state != 'ghost'
-           AND (?2 IS NULL OR u.display_name LIKE '%' || ?2 || '%' OR u.email LIKE ?2 || '%')
-           AND (?3 IS NULL OR s.display_name LIKE '%' || ?3 || '%' OR peer.display_name LIKE '%' || ?3 || '%')
-           AND (?4 IS NULL OR m.create_us < ?4)
-           AND (?5 IS NULL OR m.create_us >= ?5)
-         ORDER BY m.create_us DESC LIMIT ?6 OFFSET ?7"
-    );
-    let mut st = c.prepare(&sql)?;
-    let rows = st.query_map(
-        params![fts_query, f.from, f.space, f.before_us, f.after_us, limit, offset],
-        |r| Ok((msg_row(r)?, r.get::<_, String>(17)?)),
-    )?;
-    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
 /// The point from which search covers every conversation: the most recent contiguous

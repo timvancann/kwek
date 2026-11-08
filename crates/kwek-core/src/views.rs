@@ -143,10 +143,37 @@ pub struct SnippetPart {
 #[derive(Debug, Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
+pub struct SearchLine {
+    /// Message name, to open it.
+    pub message: String,
+    pub sender: UserRef,
+    #[ts(type = "number")]
+    pub create_us: Micros,
+    pub parts: Vec<SnippetPart>,
+}
+
+/// One conversation stretch that matched.
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
 pub struct SearchHit {
-    pub message: MessageView,
+    pub space: String,
     pub space_name: String,
-    pub snippet: Vec<SnippetPart>,
+    /// Set when the stretch is a thread's replies: open the thread.
+    pub thread: Option<String>,
+    /// The message to jump to: the first with a word match, else the first.
+    pub anchor: String,
+    #[ts(type = "number")]
+    pub first_us: Micros,
+    #[ts(type = "number")]
+    pub last_us: Micros,
+    pub lines: Vec<SearchLine>,
+    /// Messages in the stretch not shown as lines.
+    pub more: u32,
+    /// Matched on the query's words.
+    pub words: bool,
+    /// Close in meaning to the query.
+    pub meaning: bool,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -157,6 +184,20 @@ pub struct SearchResult {
     /// Oldest synced message time: search covers this point onwards.
     #[ts(type = "number | null")]
     pub covered_from_us: Option<Micros>,
+    /// Conversations whose older history is still downloading.
+    pub history_left: u32,
+    /// Search by meaning: off (no model), loading, or how far indexing is.
+    pub meaning: MeaningStatus,
+}
+
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct MeaningStatus {
+    pub available: bool,
+    pub ready: bool,
+    pub indexed: u32,
+    pub total: u32,
 }
 
 /// Builds views with a fixed user lookup and signed-in identity.

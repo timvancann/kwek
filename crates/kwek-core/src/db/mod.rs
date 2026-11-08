@@ -12,7 +12,11 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::error::{Error, Result};
 
-const MIGRATIONS: &[&str] = &[include_str!("schema.sql"), include_str!("migrate_002.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("schema.sql"),
+    include_str!("migrate_002.sql"),
+    include_str!("migrate_003.sql"),
+];
 
 #[derive(Clone)]
 pub struct Db {
@@ -64,10 +68,11 @@ impl Db {
         self.with(|c| {
             c.execute_batch(
                 "BEGIN;
-                 DELETE FROM message; DELETE FROM space; DELETE FROM user; DELETE FROM membership;
+                 DELETE FROM space; DELETE FROM message; DELETE FROM user; DELETE FROM membership;
                  DELETE FROM my_reaction; DELETE FROM space_read_state; DELETE FROM thread_read_state;
-                 DELETE FROM account; DELETE FROM kv;
+                 DELETE FROM account; DELETE FROM kv; DELETE FROM chunk; DELETE FROM embedding;
                  INSERT INTO message_fts(message_fts) VALUES ('rebuild');
+                 INSERT INTO chunk_fts(chunk_fts) VALUES ('rebuild');
                  COMMIT;",
             )?;
             Ok(())

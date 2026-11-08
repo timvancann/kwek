@@ -13,7 +13,7 @@ use tokio::sync::{Mutex, Notify};
 
 use crate::auth::TokenManager;
 use crate::chat::{ChatApi, Emoji, EmojiReactionSummary, ListMessages, older_than_filter, thread_filter};
-use crate::db::read::{self, SearchFilter};
+use crate::db::read;
 use crate::db::{Db, kv_get, kv_set, write};
 use crate::error::{Error, Result};
 use crate::events::{
@@ -21,13 +21,21 @@ use crate::events::{
 };
 use crate::people::PeopleApi;
 use crate::render;
+use crate::search::{self, embed::Embedder};
 use crate::ts::{self, DAY, MINUTE, Micros};
-use crate::views::{self, AuthState, Builder, MessageView, SearchHit, SearchResult, SpaceSummary, SyncStatus};
+use crate::views::{self, AuthState, Builder, MeaningStatus, MessageView, SearchResult, SpaceSummary, SyncStatus};
 
 pub use apply::{Applied, apply};
 
 const INITIAL_PAGE: u32 = 200;
 const OLDER_PAGE: u32 = 100;
+/// Background history download: big pages, a pause between them, a recheck now and then
+/// for spaces that appeared since.
+const BACKFILL_PAGE: u32 = 500;
+const BACKFILL_PAUSE: Duration = Duration::from_millis(300);
+const BACKFILL_RECHECK: Duration = Duration::from_secs(30 * 60);
+/// Stretches fetched per indexing round; each is embedded on its own.
+const EMBED_FETCH: u32 = 32;
 const RENEW_EVERY: Duration = Duration::from_secs(3 * 3600);
 const RECONCILE_EVERY: Duration = Duration::from_secs(15 * 60);
 const POLL_EVERY: Duration = Duration::from_secs(60);
@@ -79,9 +87,16 @@ pub struct Engine {
     own_subs: StdMutex<Vec<String>>,
     /// Downloaded attachments; deleted on logout.
     media_dir: Option<std::path::PathBuf>,
+    /// Search by meaning; None when the model is not part of this build.
+    embedder: Option<Arc<dyn Embedder>>,
+    /// Stretch vectors by text hash, loaded on first use. Lock order: db, then this.
+    vectors: StdMutex<Option<HashMap<String, Vec<f32>>>>,
+    /// Messages changed: stretches and vectors need an update.
+    index_wake: Notify,
 }
 
 impl Engine {
+    #[allow(clippy::too_many_arguments)] // one per collaborator; a builder would only add ceremony
     pub fn new(
         db: Db,
         chat: Arc<dyn ChatApi>,
@@ -90,6 +105,7 @@ impl Engine {
         tokens: Option<Arc<TokenManager>>,
         sink: Arc<dyn Sink>,
         media_dir: Option<std::path::PathBuf>,
+        embedder: Option<Arc<dyn Embedder>>,
     ) -> Arc<Self> {
         let me = db
             .with(|c| read::account(c))
@@ -120,6 +136,9 @@ impl Engine {
             read_marks: StdMutex::new(HashMap::new()),
             own_subs: StdMutex::new(Vec::new()),
             media_dir,
+            embedder,
+            vectors: StdMutex::new(None),
+            index_wake: Notify::new(),
         })
     }
 
@@ -184,6 +203,7 @@ impl Engine {
         }
         self.db.wipe()?;
         self.clear_media();
+        *self.vectors.lock().unwrap() = None;
         *self.me.lock().unwrap() = String::new();
         self.own_subs.lock().unwrap().clear();
         self.sink.spaces_changed(vec![]);
@@ -215,6 +235,7 @@ impl Engine {
                 .await
                 .map_err(|e| Error::Other(e.to_string()))??;
             self.clear_media();
+            *self.vectors.lock().unwrap() = None;
         }
         self.db
             .call(move |c| {
@@ -845,6 +866,7 @@ impl Engine {
             self.notify_new(&applied.inserted);
         }
         self.emit_spaces();
+        self.index_wake.notify_one();
     }
 
     fn notify_new(&self, inserted: &[String]) {
@@ -1065,6 +1087,10 @@ impl Engine {
 
     /// Pages one batch of older history into the cache. Returns how many messages arrived.
     pub async fn load_older(&self, space: &str) -> Result<u32> {
+        self.page_back(space, OLDER_PAGE).await
+    }
+
+    async fn page_back(&self, space: &str, page_size: u32) -> Result<u32> {
         let space_owned = space.to_owned();
         let (low_water, complete) = self.db.call(move |c| read::history_bounds(c, &space_owned)).await?;
         if complete {
@@ -1077,7 +1103,7 @@ impl Engine {
             .list_messages(
                 space,
                 &ListMessages {
-                    page_size: OLDER_PAGE,
+                    page_size,
                     newest_first: true,
                     filter: low_water.map(|o| older_than_filter(&ts::format(o))),
                     ..Default::default()
@@ -1097,12 +1123,21 @@ impl Engine {
         self.db
             .call(move |c| {
                 let tx = c.transaction()?;
-                apply(&tx, &events, &me)?;
-                if let Some(low) = new_low {
-                    write::set_low_water(&tx, &space_owned, low)?;
+                // Signed out or the space left while the page was in flight: keep nothing.
+                if !read::space_exists(&tx, &space_owned)? {
+                    return Ok(());
                 }
-                if done {
-                    write::set_history_complete(&tx, &space_owned, true)?;
+                apply(&tx, &events, &me)?;
+                // The page continues the history below the mark we started from. If the mark
+                // moved meanwhile (a concurrent page-back, or a gap reset by a refetch), this
+                // page proves nothing about contiguity: leave the mark alone.
+                if read::history_bounds(&tx, &space_owned)?.0 == low_water {
+                    if let Some(low) = new_low {
+                        write::set_low_water(&tx, &space_owned, low)?;
+                    }
+                    if done {
+                        write::set_history_complete(&tx, &space_owned, true)?;
+                    }
                 }
                 tx.commit()?;
                 Ok(())
@@ -1111,7 +1146,20 @@ impl Engine {
         if done {
             self.emit_spaces();
         }
+        self.index_wake.notify_one();
         Ok(n)
+    }
+
+    /// Everyone who wrote a cached message, most recent writer first: the search box's
+    /// suggestions for `from:`.
+    pub fn list_senders(&self) -> Result<Vec<views::UserRef>> {
+        let me = self.me();
+        self.db.with(|c| {
+            let rows = read::senders(c)?;
+            let users: HashMap<String, read::UserRow> = rows.iter().map(|u| (u.name.clone(), u.clone())).collect();
+            let b = Builder { me: &me, users: &users };
+            Ok(rows.iter().map(|u| b.user(&u.name)).collect())
+        })
     }
 
     pub fn list_members(&self, space: &str) -> Result<Vec<views::UserRef>> {
@@ -1124,48 +1172,247 @@ impl Engine {
         })
     }
 
+    /// Blocking: runs the embedding model for the query. Call from the blocking pool.
     pub fn search(&self, query: &str, limit: u32, offset: u32) -> Result<SearchResult> {
-        let (terms, filter) = parse_search(query);
-        let covered = self.db.with(|c| read::search_coverage(c))?;
-        if terms.is_empty() {
-            return Ok(SearchResult {
-                hits: vec![],
-                covered_from_us: covered,
-            });
-        }
+        let q = search::parse(query);
+        // The query vector first, outside the DB lock. Meaning waits until the indexer has
+        // loaded the model: typing never blocks on a load.
+        let embedder = self.embedder.as_ref().filter(|e| e.ready());
+        let query_vec = match embedder {
+            Some(e) if q.text().chars().count() >= 3 => e
+                .query(&q.text())
+                .map_err(|err| tracing::debug!("query embedding failed: {err}"))
+                .ok(),
+            _ => None,
+        };
         let me = self.me();
         self.db.with(|c| {
-            let rows = read::search(c, &terms, &filter, limit.clamp(1, 200), offset)?;
-            let (rows, snippets): (Vec<_>, Vec<_>) = rows.into_iter().unzip();
-            let views = self.build_messages(c, rows)?;
-            let spaces: HashMap<String, String> = {
-                let users = read::all_users(c)?;
-                let b = Builder { me: &me, users: &users };
-                read::spaces(c, &me)?
-                    .iter()
-                    .map(|s| {
-                        let members = if s.display_name.is_none() && s.space_type != "DIRECT_MESSAGE" {
-                            read::member_names(c, &s.name).unwrap_or_default()
-                        } else {
-                            vec![]
-                        };
-                        (s.name.clone(), b.space(s, &members, None).display_name)
-                    })
-                    .collect()
+            // Results must reflect the latest messages; a status-only call (empty query) need
+            // not.
+            let asks = !q.terms.is_empty() || q.has_filter();
+            if asks {
+                search::rebuild_dirty(c)?;
+            }
+            let ranked = if !asks {
+                vec![]
+            } else {
+                let mut vectors = self.vectors.lock().unwrap();
+                if let (Some(e), Some(_), None) = (embedder, &query_vec, vectors.as_ref()) {
+                    *vectors = Some(search::load_vectors(c, e.model())?);
+                }
+                search::rank(c, &q, query_vec.as_deref(), vectors.as_ref())?
             };
+            let page: Vec<search::Ranked> = ranked
+                .into_iter()
+                .skip(offset as usize)
+                .take(limit.clamp(1, 100) as usize)
+                .collect();
             Ok(SearchResult {
-                hits: views
-                    .into_iter()
-                    .zip(snippets)
-                    .map(|(m, s)| SearchHit {
-                        space_name: spaces.get(&m.space).cloned().unwrap_or_default(),
-                        snippet: views::snippet_parts(&s),
-                        message: m,
-                    })
-                    .collect(),
-                covered_from_us: covered,
+                hits: search::hits(c, &me, &q, &page)?,
+                covered_from_us: read::search_coverage(c)?,
+                history_left: search::history_left(c)?,
+                meaning: self.meaning_status(c)?,
             })
         })
+    }
+
+    fn meaning_status(&self, c: &Connection) -> Result<MeaningStatus> {
+        let Some(e) = self.embedder.as_ref().filter(|e| e.available()) else {
+            return Ok(MeaningStatus {
+                available: false,
+                ready: false,
+                indexed: 0,
+                total: 0,
+            });
+        };
+        let (total, indexed) = search::counts(c, e.model())?;
+        Ok(MeaningStatus {
+            available: true,
+            ready: e.ready(),
+            indexed,
+            total,
+        })
+    }
+
+    // ---------------------------------------------------------------- background work
+
+    /// Downloads every conversation's older history, so search reaches back to the start.
+    /// Runs forever; once everything is complete it only rechecks for new conversations.
+    pub async fn backfill(self: Arc<Self>) {
+        loop {
+            let signed_in = self.tokens.as_ref().is_some_and(|t| t.has_refresh_token());
+            let bootstrapped = self
+                .db
+                .call(|c| kv_get(c, "bootstrapped"))
+                .await
+                .ok()
+                .flatten()
+                .is_some();
+            let wait = if !(signed_in && bootstrapped) {
+                Duration::from_secs(20)
+            } else {
+                match self.backfill_pass().await {
+                    Ok(()) => BACKFILL_RECHECK,
+                    Err(e) => {
+                        tracing::info!("history download paused: {e}");
+                        Duration::from_secs(120)
+                    }
+                }
+            };
+            tokio::time::sleep(wait).await;
+        }
+    }
+
+    /// Pages back every incomplete space, most recently active first. Stops early (Err) when
+    /// offline or signed out; a space that keeps failing is skipped until the next pass.
+    pub async fn backfill_pass(&self) -> Result<()> {
+        let spaces: Vec<String> = self
+            .db
+            .call(|c| {
+                let mut st =
+                    c.prepare("SELECT name FROM space WHERE history_complete = 0 ORDER BY last_active_us DESC")?;
+                Ok(st.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?)
+            })
+            .await?;
+        for space in spaces {
+            let mut stalls = 0;
+            loop {
+                let s = space.clone();
+                let before = self.db.call(move |c| read::history_bounds(c, &s)).await?;
+                match self.page_back(&space, BACKFILL_PAGE).await {
+                    Ok(_) => {}
+                    Err(e @ Error::AuthRequired) => return Err(e),
+                    Err(e) if e.is_offline() => return Err(e),
+                    Err(e) => {
+                        tracing::warn!(%space, "history download failed: {e}");
+                        break;
+                    }
+                }
+                let s = space.clone();
+                let after = self.db.call(move |c| read::history_bounds(c, &s)).await?;
+                if after.1 {
+                    break;
+                }
+                // The mark must move down every page; if it does not, stop rather than spin.
+                let moved = match (before.0, after.0) {
+                    (_, None) => false,
+                    (None, Some(_)) => true,
+                    (Some(b), Some(a)) => a < b,
+                };
+                if moved {
+                    stalls = 0;
+                } else {
+                    stalls += 1;
+                    if stalls >= 3 {
+                        tracing::warn!(%space, "history download made no progress; skipping");
+                        break;
+                    }
+                }
+                tokio::time::sleep(BACKFILL_PAUSE).await;
+            }
+        }
+        Ok(())
+    }
+
+    /// Keeps search stretches and their vectors current. Runs forever; idle when nothing
+    /// changed.
+    pub async fn index(self: Arc<Self>) {
+        loop {
+            if let Err(e) = self.index_pass().await {
+                tracing::warn!("search index: {e}");
+            }
+            tokio::select! {
+                _ = self.index_wake.notified() => {}
+                _ = tokio::time::sleep(Duration::from_secs(300)) => {}
+            }
+            // Let a burst of changes settle.
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+    }
+
+    pub async fn index_pass(self: &Arc<Self>) -> Result<()> {
+        self.db.call(|c| search::rebuild_dirty(c).map(|_| ())).await?;
+        let Some(e) = self.embedder.clone().filter(|e| e.available()) else {
+            return Ok(());
+        };
+        // Searches use meaning only once the model is loaded; load it even with nothing to
+        // embed (a restart with everything indexed).
+        if !e.ready() {
+            let e2 = e.clone();
+            tokio::task::spawn_blocking(move || e2.load())
+                .await
+                .map_err(|e| Error::Other(format!("model load task: {e}")))??;
+        }
+        let model = e.model().to_owned();
+        loop {
+            let m = model.clone();
+            let todo = self.db.call(move |c| search::unembedded(c, &m, EMBED_FETCH)).await?;
+            if todo.is_empty() {
+                break;
+            }
+            let e2 = e.clone();
+            let vecs = tokio::task::spawn_blocking(move || {
+                // One passage per model call: with dynamic int8 quantisation a vector depends
+                // on its batch-mates. Too little language to place, or text the model fails
+                // on: an empty vector, which matches nothing and is not retried until the
+                // stretch changes. One bad stretch must not stop the rest from indexing. When
+                // every stretch fails, a probe tells a broken model (store nothing, so the next
+                // pass retries) from a batch of bad stretches (store them empty, move on).
+                let (mut tried, mut failed) = (0, 0);
+                let out: Vec<(String, Vec<f32>)> = todo
+                    .into_iter()
+                    .map(|(hash, text)| {
+                        if search::chunk::too_short_for_meaning(&text) {
+                            return (hash, Vec::new());
+                        }
+                        tried += 1;
+                        match e2.passages(&[text]) {
+                            Ok(mut v) if !v.is_empty() => (hash, v.remove(0)),
+                            Ok(_) => (hash, Vec::new()),
+                            Err(err) => {
+                                failed += 1;
+                                tracing::warn!(%hash, "embedding a stretch failed: {err}");
+                                (hash, Vec::new())
+                            }
+                        }
+                    })
+                    .collect();
+                if tried > 0
+                    && failed == tried
+                    && let Err(err) = e2.passages(&["a short probe sentence for the model".to_owned()])
+                {
+                    return Err(Error::Other(format!("the embedding model fails: {err}")));
+                }
+                Ok(out)
+            })
+            .await
+            .map_err(|e| Error::Other(format!("embedding task: {e}")))??;
+            // DB first, cache second, both under the DB lock (lock order: db, then vectors).
+            let (this, m) = (self.clone(), model.clone());
+            self.db
+                .call(move |c| {
+                    let kept = search::store_vectors(c, &m, vecs)?;
+                    if let Some(map) = this.vectors.lock().unwrap().as_mut() {
+                        map.extend(kept);
+                    }
+                    Ok(())
+                })
+                .await?;
+        }
+        // Vectors of stretches that changed or went.
+        let this = self.clone();
+        self.db
+            .call(move |c| {
+                let dropped = search::drop_orphan_vectors(c)?;
+                if let Some(map) = this.vectors.lock().unwrap().as_mut() {
+                    for h in &dropped {
+                        map.remove(h);
+                    }
+                }
+                Ok(())
+            })
+            .await?;
+        Ok(())
     }
 
     // ---------------------------------------------------------------- focus
@@ -1576,37 +1823,6 @@ fn short(e: &Error) -> String {
     } else {
         s
     }
-}
-
-/// `from:ada in:tech before:2024-06-01 after:2024-01-01 words` -> FTS query + filters.
-pub fn parse_search(q: &str) -> (String, SearchFilter) {
-    let mut f = SearchFilter::default();
-    let mut terms = Vec::new();
-    for tok in q.split_whitespace() {
-        let (k, v) = tok.split_once(':').unwrap_or(("", tok));
-        match k {
-            "from" if !v.is_empty() => f.from = Some(v.to_owned()),
-            "in" if !v.is_empty() => f.space = Some(v.to_owned()),
-            "before" => f.before_us = date_us(v),
-            "after" => f.after_us = date_us(v),
-            _ => {
-                // Quote each term so FTS syntax characters in user input are literal; prefix
-                // match the last one so results appear while typing.
-                let clean: String = tok.chars().filter(|c| *c != '"').collect();
-                if !clean.is_empty() {
-                    terms.push(format!("\"{clean}\""));
-                }
-            }
-        }
-    }
-    if let Some(last) = terms.last_mut() {
-        last.push('*');
-    }
-    (terms.join(" "), f)
-}
-
-fn date_us(s: &str) -> Option<Micros> {
-    ts::parse(&format!("{s}T00:00:00Z"))
 }
 
 #[cfg(test)]

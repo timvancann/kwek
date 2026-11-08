@@ -11,7 +11,12 @@ name = "kwek_core"
 name = "spike"
 path = "src/bin/spike.rs"
 
+[features]
+# Search by meaning with an on-device embedding model (ONNX Runtime, linked statically).
+semantic = ["dep:fastembed"]
+
 [dependencies]
+fastembed = { workspace = true, optional = true }
 anyhow.workspace = true
 async-trait.workspace = true
 base64.workspace = true

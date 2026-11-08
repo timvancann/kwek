@@ -33,6 +33,7 @@ export const api = {
   markThreadRead: (thread: string, upTo: number) => invoke<void>("mark_thread_read", { thread, upTo }),
   search: (query: string, limit = 50, offset = 0) => invoke<SearchResult>("search", { query, limit, offset }),
   listMembers: (space: string) => invoke<UserRef[]>("list_members", { space }),
+  listSenders: () => invoke<UserRef[]>("list_senders"),
   setSpacePrefs: (space: string, prefs: { muted?: boolean; starred?: boolean }) =>
     invoke<void>("set_space_prefs", { space, muted: prefs.muted ?? null, starred: prefs.starred ?? null }),
   setOpen: (space: string | null, thread: string | null) => invoke<void>("set_open", { space, thread }),

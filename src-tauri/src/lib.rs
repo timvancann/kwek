@@ -13,6 +13,7 @@ use kwek_core::db::Db;
 use kwek_core::events::EventsClient;
 use kwek_core::google::Google;
 use kwek_core::people::HttpPeople;
+use kwek_core::search::embed::{E5, Embedder};
 use kwek_core::sync::{Engine, Notification, Sink};
 use kwek_core::views::{AuthState, MessageView, SpaceSummary, SyncStatus};
 use serde_json::json;
@@ -136,6 +137,12 @@ pub fn run() {
             let sink = Arc::new(TauriSink {
                 app: app.handle().clone(),
             });
+            // The search model ships in the bundle's resources (`just model` fetches it).
+            let model_dir = app.path().resource_dir()?.join("models/multilingual-e5-small");
+            let embedder: Arc<dyn Embedder> = Arc::new(E5::new(model_dir));
+            if !embedder.available() {
+                tracing::warn!("search model files missing; search by meaning is off");
+            }
             let engine = Engine::new(
                 db,
                 Arc::new(HttpChat::new(g.clone())),
@@ -144,8 +151,11 @@ pub fn run() {
                 Some(tokens),
                 sink,
                 Some(media_dir.clone()),
+                Some(embedder),
             );
             tauri::async_runtime::spawn(engine.clone().run());
+            tauri::async_runtime::spawn(engine.clone().backfill());
+            tauri::async_runtime::spawn(engine.clone().index());
             app.manage(AppState {
                 engine,
                 media_dir,
@@ -187,6 +197,7 @@ pub fn run() {
             commands::mark_thread_read,
             commands::search,
             commands::list_members,
+            commands::list_senders,
             commands::set_space_prefs,
             commands::set_open,
             commands::last_own_message,
