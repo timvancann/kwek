@@ -2,8 +2,7 @@
   import type { Inline } from "$lib/bindings/Inline";
   import { api } from "$lib/api";
   import { cn } from "$lib/utils";
-  import Video from "@lucide/svelte/icons/video";
-  import FileText from "@lucide/svelte/icons/file-text";
+  import SiteIcon from "./SiteIcon.svelte";
 
   let { inlines, tabbable = true }: { inlines: Inline[]; tabbable?: boolean } = $props();
   const tab = $derived(tabbable ? 0 : -1);
@@ -11,6 +10,30 @@
   function open(e: MouseEvent, url: string) {
     e.preventDefault();
     void api.openUrl(url);
+  }
+
+  function hostOf(url: string): string {
+    try {
+      return new URL(url).hostname.toLowerCase();
+    } catch {
+      return "";
+    }
+  }
+
+  /** A bare link reads as its address without the noise (scheme, www, trailing slash), and
+   * a very long one is trimmed; the full address is in the tooltip. Named links keep their
+   * text. */
+  function linkText(label: string, url: string): string {
+    if (!label.trim()) return hostOf(url) || url;
+    if (label !== url && !/^https?:\/\//i.test(label)) return label;
+    const short = [...label.replace(/^https?:\/\//i, "").replace(/^www\./i, "").replace(/\/$/, "")];
+    return short.length > 64 ? short.slice(0, 61).join("") + "…" : short.join("");
+  }
+
+  /** The first character (a whole emoji, not half of one) and the rest. */
+  function head(text: string): [string, string] {
+    const [first = "", ...rest] = [...text];
+    return [first, rest.join("")];
   }
 </script>
 
@@ -22,21 +45,17 @@
       >@{i.label}</span
     >
   {:else if i.kind === "link"}
-    {#if i.rich}
-      <a
-        href={i.url}
-        tabindex={tab}
-        onclick={(e) => open(e, i.url)}
-        class="mx-px inline-flex items-center gap-1 rounded-sm border border-border bg-muted px-1.5 py-px align-baseline text-accent no-underline hover:border-accent"
-      >
-        {#if i.rich === "meet"}<Video class="size-3.5" aria-hidden="true" />{:else}<FileText class="size-3.5" aria-hidden="true" />{/if}
-        <span class="max-w-[28ch] truncate">{i.label}</span>
-      </a>
-    {:else}
-      <a href={i.url} tabindex={tab} onclick={(e) => open(e, i.url)} class="break-words text-accent underline decoration-accent/40 underline-offset-2 hover:decoration-accent"
-        >{i.label}</a
-      >
-    {/if}
+    {@const [first, rest] = head(linkText(i.label, i.url))}
+    <!-- The site's icon, then the link: GitHub, Docs, Meet and the rest recognisable at a glance.
+         The icon sticks to the first letter, so a line wrap never strands it. -->
+    <a
+      href={i.url}
+      title={i.url}
+      tabindex={tab}
+      onclick={(e) => open(e, i.url)}
+      class="break-words text-accent no-underline decoration-accent/50 underline-offset-2 hover:underline"
+      ><span class="whitespace-nowrap"><SiteIcon host={hostOf(i.url)} />{first}</span>{rest}</a
+    >
   {:else if i.kind === "break"}<br />
   {/if}
 {/each}

@@ -445,6 +445,18 @@ async fn an_incoming_call_notifies_with_join_even_in_the_open_conversation() {
         "type": "RICH_LINK",
         "richLinkMetadata": { "uri": "https://meet.google.com.evil.example/x", "richLinkType": "MEET_SPACE" }
     })]);
+    // A meeting started from a space.
+    let mut meeting = message(
+        "spaces/team",
+        "meet",
+        "users/ada",
+        &ts::format(now - 3 * ts::SECOND),
+        "",
+        "meet",
+        false,
+    );
+    meeting.formatted_text = None;
+    meeting.annotations = call_message("x", now, None).annotations;
     let a =
         e.db.with(|c| {
             apply(
@@ -453,16 +465,20 @@ async fn an_incoming_call_notifies_with_join_even_in_the_open_conversation() {
                     Event::MessageUpserted(call_message("ringing", now - 10 * ts::SECOND, None)),
                     Event::MessageUpserted(call_message("over", now - 30 * ts::SECOND, Some(20 * ts::SECOND))),
                     Event::MessageUpserted(fake),
+                    Event::MessageUpserted(meeting),
                 ],
                 ME,
             )
         })
         .unwrap();
     e.after_apply(a, true).await;
-    let notes = rec.notes.lock().unwrap().clone();
-    assert_eq!(notes.len(), 1, "only the real call still ringing: {notes:?}");
+    let mut notes = rec.notes.lock().unwrap().clone();
+    notes.sort_by(|a, b| a.title.cmp(&b.title));
+    assert_eq!(notes.len(), 2, "the call still ringing and the new meeting: {notes:?}");
     assert_eq!(notes[0].title, "Ada Lovelace is calling you");
     assert_eq!(notes[0].url.as_deref(), Some("https://meet.google.com/abc-defg-hij"));
+    assert_eq!(notes[1].title, "Ada Lovelace started a meeting in Team");
+    assert_eq!(notes[1].url.as_deref(), Some("https://meet.google.com/abc-defg-hij"));
 
     // In the conversation: a call, not a bare link, and its end is not an "edit".
     let msgs = e.get_messages("spaces/dm", None, 50).unwrap();

@@ -142,9 +142,12 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 let state = app.state::<AppState>();
                 let decode = |s: &str| percent_encoding::percent_decode_str(s).decode_utf8_lossy().to_string();
-                let result = match path.strip_prefix("avatar/") {
-                    Some(url) => kwek_core::media::avatar(&state.media_dir, &decode(url)).await,
-                    None => state.engine.media(&state.media_dir, &decode(&path)).await,
+                let result = if let Some(url) = path.strip_prefix("avatar/") {
+                    kwek_core::media::avatar(&state.media_dir, &decode(url)).await
+                } else if let Some(host) = path.strip_prefix("favicon/") {
+                    kwek_core::media::favicon(&state.media_dir, &decode(host)).await
+                } else {
+                    state.engine.media(&state.media_dir, &decode(&path)).await
                 };
                 let resp = match result {
                     Ok((bytes, mime)) => Response::builder()

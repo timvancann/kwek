@@ -939,21 +939,27 @@ impl Engine {
             if r.sender == me || space.muted || r.delete_us.is_some() {
                 continue;
             }
-            // Someone calling: worth telling even in the open conversation, while it rings
-            // (fresh, and not yet ended, which updates the message).
-            if (is_dm || space.space_type == "GROUP_CHAT")
-                && let Some(url) = views::call_link(&r)
-            {
+            // Someone calling, or starting a meeting in a space: worth telling even in the open
+            // conversation, while it rings (fresh, and not yet ended, which updates the
+            // message).
+            if let Some(url) = views::call_link(&r) {
                 if now - r.create_us < CALL_RINGS && r.update_us <= r.create_us + ts::SECOND {
                     let caller = b.user(&r.sender).display_name;
-                    let title = if is_dm {
-                        format!("{caller} is calling you")
-                    } else {
-                        format!("{caller} started a call in {}", b.space(space, &[], None).display_name)
+                    let place = b.space(space, &[], None).display_name;
+                    let (title, body) = match space.space_type.as_str() {
+                        "DIRECT_MESSAGE" => (format!("{caller} is calling you"), "Join the call in your browser."),
+                        "GROUP_CHAT" => (
+                            format!("{caller} started a call in {place}"),
+                            "Join the call in your browser.",
+                        ),
+                        _ => (
+                            format!("{caller} started a meeting in {place}"),
+                            "Join the meeting in your browser.",
+                        ),
                     };
                     calls.push(Notification {
                         title,
-                        body: "Join the call in your browser.".into(),
+                        body: body.into(),
                         space: r.space.clone(),
                         message: r.name.clone(),
                         thread: r.thread.clone(),
