@@ -439,6 +439,12 @@ async fn an_incoming_call_notifies_with_join_even_in_the_open_conversation() {
     e.set_open(Some("spaces/dm".into()), None);
     e.set_window_focused(true);
     let now = ts::now();
+    // A "call" whose link isn't Meet: no Join to offer, so not treated as a call at all.
+    let mut fake = call_message("fake", now - 5 * ts::SECOND, None);
+    fake.annotations = Some(vec![serde_json::json!({
+        "type": "RICH_LINK",
+        "richLinkMetadata": { "uri": "https://meet.google.com.evil.example/x", "richLinkType": "MEET_SPACE" }
+    })]);
     let a =
         e.db.with(|c| {
             apply(
@@ -446,6 +452,7 @@ async fn an_incoming_call_notifies_with_join_even_in_the_open_conversation() {
                 &[
                     Event::MessageUpserted(call_message("ringing", now - 10 * ts::SECOND, None)),
                     Event::MessageUpserted(call_message("over", now - 30 * ts::SECOND, Some(20 * ts::SECOND))),
+                    Event::MessageUpserted(fake),
                 ],
                 ME,
             )
@@ -453,7 +460,7 @@ async fn an_incoming_call_notifies_with_join_even_in_the_open_conversation() {
         .unwrap();
     e.after_apply(a, true).await;
     let notes = rec.notes.lock().unwrap().clone();
-    assert_eq!(notes.len(), 1, "only the call still ringing: {notes:?}");
+    assert_eq!(notes.len(), 1, "only the real call still ringing: {notes:?}");
     assert_eq!(notes[0].title, "Ada Lovelace is calling you");
     assert_eq!(notes[0].url.as_deref(), Some("https://meet.google.com/abc-defg-hij"));
 
@@ -465,6 +472,7 @@ async fn an_incoming_call_notifies_with_join_even_in_the_open_conversation() {
     assert!(ringing.blocks.is_empty());
     assert_eq!(over.call.as_ref().unwrap().duration_secs, Some(20));
     assert!(!over.edited);
+    assert!(msgs.iter().find(|m| m.name.ends_with("/fake")).unwrap().call.is_none());
 }
 
 #[tokio::test]

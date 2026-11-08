@@ -70,15 +70,7 @@ pub fn parse_events(v: &Value) -> Vec<MeetingView> {
                 Some("workingLocation" | "focusTime" | "outOfOffice")
             )
         })
-        .filter(|e| {
-            let me_declined = e.get("attendees").and_then(|a| a.as_array()).is_some_and(|a| {
-                a.iter().any(|p| {
-                    p.get("self").and_then(|s| s.as_bool()) == Some(true)
-                        && p.get("responseStatus").and_then(|r| r.as_str()) == Some("declined")
-                })
-            });
-            !me_declined
-        })
+        .filter(|e| my_response(e) != Some("declined"))
         .filter_map(|e| {
             let time = |k: &str| {
                 e.pointer(&format!("/{k}/dateTime"))
@@ -96,6 +88,8 @@ pub fn parse_events(v: &Value) -> Vec<MeetingView> {
                         .get("uri")?
                         .as_str()
                 })
+                .filter(|u| is_meeting_link(u))
+                .filter(|_| !unanswered_outside_invite(e))
                 .map(str::to_owned);
             Some(MeetingView {
                 id: e.get("id")?.as_str()?.to_owned(),
@@ -112,6 +106,53 @@ pub fn parse_events(v: &Value) -> Vec<MeetingView> {
             })
         })
         .collect()
+}
+
+fn my_response(e: &Value) -> Option<&str> {
+    e.get("attendees")?
+        .as_array()?
+        .iter()
+        .find(|p| p.get("self").and_then(|s| s.as_bool()) == Some(true))?
+        .get("responseStatus")?
+        .as_str()
+}
+
+/// An invite from another domain that you haven't answered. Anyone can send one; it still
+/// shows and reminds (it may well be a client), but offers no Join until you accept it.
+/// Without an organizer or emails to compare, it counts as yours.
+fn unanswered_outside_invite(e: &Value) -> bool {
+    let domain = |email: Option<&str>| {
+        email
+            .and_then(|m| m.rsplit_once('@'))
+            .map(|(_, d)| d.to_ascii_lowercase())
+    };
+    let me = e
+        .get("attendees")
+        .and_then(|a| a.as_array())
+        .and_then(|a| a.iter().find(|p| p.get("self").and_then(|s| s.as_bool()) == Some(true)));
+    let mine = domain(me.and_then(|p| p.get("email")).and_then(|m| m.as_str()));
+    let theirs = domain(e.pointer("/organizer/email").and_then(|m| m.as_str()));
+    my_response(e) == Some("needsAction") && mine.is_some() && theirs.is_some() && mine != theirs
+}
+
+/// A link kwek will offer to join: https, on a known video meeting service. Anyone can put
+/// any "video link" in an invite they send you; anything else counts as no video link. This
+/// keeps lookalike and arbitrary sites out; it can't stop a stranger inviting you to a real
+/// Meet or Zoom room of their own, which is no different from such a link in an email.
+pub fn is_meeting_link(link: &str) -> bool {
+    let Ok(u) = url::Url::parse(link) else {
+        return false;
+    };
+    let Some(host) = u.host_str().map(|h| h.to_ascii_lowercase()) else {
+        return false;
+    };
+    let under = |domain: &str| host == domain || host.ends_with(&format!(".{domain}"));
+    u.scheme() == "https"
+        && (host == "meet.google.com"
+            || under("zoom.us")
+            || host == "teams.microsoft.com"
+            || host == "teams.live.com"
+            || under("webex.com"))
 }
 
 /// Meetings whose reminder is due at `now` and hasn't gone out: from a minute before the
@@ -310,6 +351,65 @@ mod tests {
         assert_eq!(m[1].join_url.as_deref(), Some("https://meet.google.com/ddd-eeee-fff"));
         assert_eq!(m[2].join_url, None);
         assert_eq!(m[0].start_us, ts::parse("2026-11-09T09:00:00Z").unwrap());
+    }
+
+    #[test]
+    fn only_real_meeting_links_are_joinable() {
+        assert!(is_meeting_link("https://meet.google.com/aaa-bbbb-ccc"));
+        assert!(is_meeting_link("https://acme.zoom.us/j/123"));
+        assert!(is_meeting_link("https://teams.microsoft.com/l/meetup-join/x"));
+        assert!(!is_meeting_link("http://meet.google.com/aaa-bbbb-ccc"), "https only");
+        assert!(!is_meeting_link("https://meet.google.com.evil.example/x"));
+        assert!(!is_meeting_link("https://evilzoom.us/j/1"));
+        assert!(!is_meeting_link("javascript:alert(1)"));
+        assert!(
+            !is_meeting_link("https://meet.google.com@evil.example/x"),
+            "userinfo trick"
+        );
+        assert!(
+            !is_meeting_link("https://meet.google.com./x"),
+            "trailing dot fails closed"
+        );
+        assert!(
+            is_meeting_link("https://MEET.GOOGLE.COM/aaa-bbbb-ccc"),
+            "host case doesn't matter"
+        );
+        assert!(is_meeting_link("https://meet.google.com:443/aaa-bbbb-ccc"));
+
+        // An invite with an arbitrary "video link": shown, but nothing to join.
+        let v = json!({ "items": [event("x", "2026-11-09T10:00:00+01:00", json!({
+            "conferenceData": { "entryPoints": [{ "entryPointType": "video", "uri": "https://login.example/meet" }] } }))] });
+        assert_eq!(parse_events(&v)[0].join_url, None);
+    }
+
+    #[test]
+    fn unanswered_invites_from_outside_offer_no_join() {
+        let me = |status: &str| json!({ "email": "tim@acme.nl", "self": true, "responseStatus": status });
+        let meet = "https://meet.google.com/aaa-bbbb-ccc";
+        let v = json!({ "items": [
+            event("outside", "2026-11-09T10:00:00+01:00", json!({ "hangoutLink": meet,
+                "organizer": { "email": "someone@stranger.example" }, "attendees": [me("needsAction")] })),
+            event("outside-accepted", "2026-11-09T10:00:00+01:00", json!({ "hangoutLink": meet,
+                "organizer": { "email": "someone@stranger.example" }, "attendees": [me("accepted")] })),
+            event("colleague", "2026-11-09T10:00:00+01:00", json!({ "hangoutLink": meet,
+                "organizer": { "email": "noor@acme.nl" }, "attendees": [me("needsAction")] })),
+            event("no-organizer", "2026-11-09T10:00:00+01:00", json!({ "hangoutLink": meet,
+                "attendees": [me("needsAction")] })),
+        ]});
+        let joins: Vec<(String, bool)> = parse_events(&v)
+            .into_iter()
+            .map(|m| (m.id, m.join_url.is_some()))
+            .collect();
+        assert_eq!(
+            joins,
+            vec![
+                ("outside".into(), false),
+                ("outside-accepted".into(), true),
+                ("colleague".into(), true),
+                ("no-organizer".into(), true),
+            ],
+            "all shown and reminded; only the unanswered outside one has nothing to join"
+        );
     }
 
     #[test]

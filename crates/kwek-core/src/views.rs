@@ -164,7 +164,10 @@ pub fn call_link(m: &MessageRow) -> Option<String> {
     annotations
         .iter()
         .find(|a| a.pointer("/richLinkMetadata/richLinkType").and_then(|t| t.as_str()) == Some("MEET_SPACE"))
-        .and_then(|a| a.pointer("/richLinkMetadata/uri")?.as_str().map(str::to_owned))
+        .and_then(|a| a.pointer("/richLinkMetadata/uri")?.as_str())
+        // Only Meet itself: a call is offered as something to join.
+        .filter(|u| u.starts_with("https://meet.google.com/"))
+        .map(str::to_owned)
 }
 
 /// The Google Cloud setup kwek signs in with, for the sign-in screen.
