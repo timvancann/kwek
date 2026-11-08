@@ -4,7 +4,9 @@ Tauri 2 + Svelte 5. Rust owns all I/O (`crates/kwek-core` has no Tauri dependenc
 
 ## Build
 
-`just install` builds `kwek.app` into `~/Applications`; `just bundle` only builds it; `just run` runs from source with hot reload. The app is unsigned, which is fine on the Mac that built it.
+`just install` builds `kwek.app` into `~/Applications`; `just bundle` only builds it; `just run` runs from source with hot reload.
+
+Unsigned, every build is a different app to the Keychain, so after each rebuild macOS asks before kwek can read its saved sign-in. A self-signed "kwek local" certificate fixes that: create it once with `tools/make-signing-cert.sh` (needs OpenSSL 3, `brew install openssl`), and `just bundle` signs with it from then on, so every build is the same app. It isn't trusted system-wide and doesn't need to be; it only has to stay the same. The first signed build still asks once, since the saved sign-in belongs to the last unsigned one: choose Always Allow.
 
 Without anything extra, kwek asks for the user's client file on first start and keeps its details in the data folder (`google-client.json`). With your client file saved as `secrets/oauth-client.json` (gitignored), the build bakes it in instead and skips that step, which suits development. `KWEK_OAUTH_CLIENT_ID`, `KWEK_OAUTH_CLIENT_SECRET`, `KWEK_GCP_PROJECT` and `KWEK_PUBSUB_TOPIC` (default `chat-events`) override the file. A client file given in the app wins over the baked-in one.
 
