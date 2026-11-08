@@ -1,12 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
-  <!-- macOS icon grid: 824px rounded square centred in 1024. -->
-  <rect x="100" y="100" width="824" height="824" rx="186" fill="#1b2320"/>
-  <!-- Speech bubble. -->
-  <path d="M300 330 h424 a70 70 0 0 1 70 70 v220 a70 70 0 0 1 -70 70 h-250 l-120 96 v-96 h-54 a70 70 0 0 1 -70 -70 v-220 a70 70 0 0 1 70 -70 z" fill="#ffffff"/>
-  <!-- Three short lines: chatter. -->
-  <rect x="330" y="420" width="300" height="34" rx="17" fill="#1b2320"/>
-  <rect x="330" y="490" width="364" height="34" rx="17" fill="#1b2320"/>
-  <rect x="330" y="560" width="210" height="34" rx="17" fill="#1b2320"/>
-  <!-- Unread dot in highlighter yellow. -->
-  <circle cx="748" cy="318" r="74" fill="#f5d659" stroke="#1b2320" stroke-width="22"/>
+  <!-- macOS icon grid: 824px rounded square centred in 1024. Same tile and cyan as riff and rsdisk. -->
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="#05090b"/>
+  <!-- Round speech bubble, tail at the bottom left. -->
+  <circle cx="530" cy="490" r="265" fill="#35cdd6"/>
+  <path d="M340 650 L262 800 L440 715 Z" fill="#35cdd6" stroke="#35cdd6" stroke-width="36" stroke-linejoin="round"/>
+  <!-- Smile cut out in the tile colour. -->
+  <path d="M394 493 A150 150 0 0 0 666 493" fill="none" stroke="#05090b" stroke-width="58" stroke-linecap="round"/>
 </svg>
