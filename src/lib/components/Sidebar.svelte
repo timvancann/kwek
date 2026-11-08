@@ -12,6 +12,7 @@
   import Search from "@lucide/svelte/icons/search";
   import LogOut from "@lucide/svelte/icons/log-out";
   import Eye from "@lucide/svelte/icons/eye";
+  import EyeOff from "@lucide/svelte/icons/eye-off";
 
   let nav: HTMLElement | undefined = $state();
 
@@ -199,7 +200,8 @@
                   }}
                   class={cn(
                     "flex h-8 w-full items-center gap-2.5 rounded-md px-2.5 text-left text-[14.5px] outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
-                    active ? "bg-sidebar-active font-semibold" : "hover:bg-sidebar-hover",
+                    // The whole row, so it stays highlighted while the pointer is on its hide button.
+                    active ? "bg-sidebar-active font-semibold" : "group-hover:bg-sidebar-hover",
                     s.muted && !active && "text-muted-foreground",
                     !s.muted && s.unread > 0 && "font-semibold",
                     dragging === s.name && "opacity-50",
@@ -227,18 +229,22 @@
                   {/if}
                   {#if unreadLabel(s)}<span class="sr-only">, {unreadLabel(s)}</span>{/if}
                 </button>
-                {#if section.id === "hidden"}
-                  <!-- A mouse shortcut; with the keyboard, open it and use Unhide in the header. -->
-                  <button
-                    class="absolute top-1 right-1 hidden size-6 place-items-center rounded-md bg-sidebar-hover text-muted-foreground group-hover:grid hover:text-foreground"
-                    tabindex="-1"
-                    aria-label="Show {s.displayName} in the sidebar again"
-                    title="Show in the sidebar again"
-                    onclick={() => void app.toggleHidden(s)}
-                  >
-                    <Eye class="size-3.5" aria-hidden="true" />
-                  </button>
-                {/if}
+                <!-- Hide or show on hover, a mouse shortcut over the badge. Out of reach until
+                     the row is hovered, and out of the accessibility tree: the conversation
+                     header's Hide/Unhide is the way for keyboard and screen readers. -->
+                <button
+                  class={cn(
+                    "pointer-events-none absolute top-1 right-1 grid size-6 place-items-center rounded-md text-muted-foreground opacity-0 group-hover:pointer-events-auto group-hover:opacity-100 hover:text-foreground",
+                    active ? "bg-sidebar-active" : "bg-sidebar-hover",
+                  )}
+                  tabindex="-1"
+                  aria-hidden="true"
+                  aria-label={s.hidden ? `Show ${s.displayName} in the sidebar again` : `Hide ${s.displayName}`}
+                  title={s.hidden ? "Show in the sidebar again" : "Hide: moves it under Hidden"}
+                  onclick={() => void app.toggleHidden(s)}
+                >
+                  {#if s.hidden}<Eye class="size-3.5" aria-hidden="true" />{:else}<EyeOff class="size-3.5" aria-hidden="true" />{/if}
+                </button>
               </li>
             {/each}
           </ul>
