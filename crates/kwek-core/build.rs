@@ -1,11 +1,13 @@
-//! Bakes the Google Cloud setup into the binary: the OAuth desktop client, the project it
-//! lives in, and the Pub/Sub topic for live events (see docs/setup.md).
+//! Optionally bakes a Google Cloud setup into the binary: the OAuth desktop client, the
+//! project it lives in, and the Pub/Sub topic for live events (see docs/setup.md). Release
+//! builds carry none and ask the user for their client file on first start; a baked one
+//! skips that step, which suits development.
 //!
 //! Source, in order: `KWEK_OAUTH_CLIENT_ID` / `KWEK_OAUTH_CLIENT_SECRET` / `KWEK_GCP_PROJECT`
 //! env vars, then `secrets/oauth-client.json` at the repo root (the file the console
 //! downloads; it names its project). The topic is `KWEK_PUBSUB_TOPIC`, default `chat-events`.
 //! Google treats a desktop client secret as non-confidential; PKCE carries the security. The
-//! file stays out of git anyway. Missing credentials compile fine and fail at login time.
+//! file stays out of git anyway.
 
 use std::path::PathBuf;
 
@@ -38,11 +40,6 @@ fn main() {
         project = v;
     }
     let topic = std::env::var("KWEK_PUBSUB_TOPIC").unwrap_or_else(|_| "chat-events".into());
-    if project.is_empty() {
-        println!(
-            "cargo:warning=No Google Cloud project: secrets/oauth-client.json has no project_id and KWEK_GCP_PROJECT is unset. Live events will not work; see docs/setup.md."
-        );
-    }
     println!("cargo:rustc-env=KWEK_OAUTH_CLIENT_ID={id}");
     println!("cargo:rustc-env=KWEK_OAUTH_CLIENT_SECRET={secret}");
     println!("cargo:rustc-env=KWEK_GCP_PROJECT={project}");
