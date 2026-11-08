@@ -22,15 +22,13 @@ jobs:
         with:
           node-version: lts/*
           cache: pnpm
-      - uses: taiki-e/install-action@just
-
       # The search model is bundled as a Tauri resource, so the app crate needs it to
-      # compile. Cached on its checksums; `just model` verifies whatever it finds.
+      # compile. Cached on its checksums; the fetch script verifies whatever it finds.
       - uses: actions/cache@v6
         with:
           path: models/multilingual-e5-small
           key: model-${{ hashFiles('models/*.sha256') }}
-      - run: just model
+      - run: tools/fetch-model.sh
 
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
