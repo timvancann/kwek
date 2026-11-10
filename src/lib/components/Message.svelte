@@ -2,7 +2,7 @@
   import type { MessageView } from "$lib/api";
   import { api, errorText } from "$lib/api";
   import { ago, clock, stamp } from "$lib/format";
-  import { app } from "$lib/state.svelte";
+  import { app, viewable } from "$lib/state.svelte";
   import { cn } from "$lib/utils";
   import { toast } from "svelte-sonner";
   import Avatar from "./Avatar.svelte";
@@ -16,6 +16,7 @@
   import Paperclip from "@lucide/svelte/icons/paperclip";
   import HardDrive from "@lucide/svelte/icons/hard-drive";
   import Video from "@lucide/svelte/icons/video";
+  import Play from "@lucide/svelte/icons/play";
 
   /** "12 min", "1 h 5 min", or "under a minute". */
   function callLength(secs: number): string {
@@ -61,6 +62,10 @@
   );
   // Controls inside a message are reachable with Tab only when it is the selected one.
   const inner = $derived(selected ? 0 : -1);
+
+  function view(a: MessageView["attachments"][number], from: HTMLElement) {
+    app.viewing = { message: m, index: Math.max(0, viewable(m).indexOf(a)), from };
+  }
 
   async function download(resource: string, name: string) {
     try {
@@ -168,13 +173,23 @@
               <button
                 tabindex={inner}
                 class="block cursor-zoom-in overflow-hidden rounded-md border border-border"
-                onclick={(e) => {
-                  const images = m.attachments.filter((x) => x.kind === "image" && x.mediaUrl);
-                  app.viewing = { message: m, index: Math.max(0, images.indexOf(a)), from: e.currentTarget };
-                }}
+                onclick={(e) => view(a, e.currentTarget)}
                 aria-label="Image {a.name}, open larger"
               >
                 <img src={a.mediaUrl} alt={a.name} loading="lazy" class="block max-h-72 max-w-[min(360px,100%)] object-contain" draggable="false" />
+              </button>
+            {:else if a.kind === "video" && a.mediaUrl}
+              <!-- No preview frame: that would mean downloading every video scrolled past. -->
+              <button
+                tabindex={inner}
+                class="relative grid h-36 w-64 max-w-full place-items-center overflow-hidden rounded-md border border-border bg-muted hover:border-accent"
+                onclick={(e) => view(a, e.currentTarget)}
+                aria-label="Video {a.name}, play"
+              >
+                <span class="grid size-11 place-items-center rounded-full bg-foreground/75 text-background" aria-hidden="true">
+                  <Play class="ml-0.5 size-5 fill-current" />
+                </span>
+                <span class="absolute inset-x-0 bottom-0 truncate px-2 py-1 text-left text-[12px] text-muted-foreground">{a.name}</span>
               </button>
             {:else}
               {@const sending = !a.openUrl && !a.resource && m.localState !== "synced"}

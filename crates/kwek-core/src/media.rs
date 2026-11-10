@@ -1,5 +1,6 @@
 //! Avatar proxy with a disk cache. Attachments go through [`crate::sync::Engine::media`],
-//! which needs auth; avatars are public URLs and are fetched without credentials.
+//! which needs auth; avatars are public URLs and are fetched without credentials. Also the
+//! byte ranges a `<video>` asks for.
 
 use std::path::Path;
 use std::sync::OnceLock;
@@ -135,9 +136,83 @@ pub async fn avatar(cache_dir: &Path, url: &str) -> Result<(Vec<u8>, Option<Stri
     Ok((bytes, Some(mime)))
 }
 
+/// At most this much per answer to a `Range` request: WebKit asks for the rest of a video and
+/// comes back for what it didn't get, so a big file never sits in memory whole.
+pub const MAX_RANGE: u64 = 4 * 1024 * 1024;
+
+/// The bytes a `Range` header asks for in a file of `total` bytes, first and last inclusive:
+/// the first range only, and at most [`MAX_RANGE`] of it. `None` when it can't be served (416).
+pub fn byte_range(header: &str, total: u64) -> Option<(u64, u64)> {
+    let spec = header.trim().strip_prefix("bytes=")?.split(',').next()?.trim();
+    let (a, b) = spec.split_once('-')?;
+    let last = total.checked_sub(1)?;
+    let (start, end) = match (a.trim(), b.trim()) {
+        ("", n) => match n.parse::<u64>().ok()? {
+            0 => return None,
+            n => (total.saturating_sub(n), last),
+        },
+        (s, "") => (s.parse().ok()?, last),
+        (s, e) => {
+            let (s, e): (u64, u64) = (s.parse().ok()?, e.parse().ok()?);
+            if e < s {
+                return None;
+            }
+            (s, e.min(last))
+        }
+    };
+    if start > last {
+        return None;
+    }
+    Some((start, end.min(start + MAX_RANGE - 1)))
+}
+
+/// The bytes from `start` to `end` (inclusive) of a file.
+pub async fn read_range(path: &Path, start: u64, end: u64) -> Result<Vec<u8>> {
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
+    let mut f = tokio::fs::File::open(path).await?;
+    f.seek(std::io::SeekFrom::Start(start)).await?;
+    let mut buf = vec![0; (end - start + 1) as usize];
+    f.read_exact(&mut buf).await?;
+    Ok(buf)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ranges_as_webkit_asks_for_them() {
+        assert_eq!(byte_range("bytes=0-1", 1000), Some((0, 1)), "the probe before playing");
+        assert_eq!(byte_range("bytes=100-", 1000), Some((100, 999)));
+        assert_eq!(byte_range("bytes=-10", 1000), Some((990, 999)), "the last ten");
+        assert_eq!(byte_range("bytes=-5000", 1000), Some((0, 999)), "more than there is");
+        assert_eq!(
+            byte_range("bytes=900-5000", 1000),
+            Some((900, 999)),
+            "end past the file"
+        );
+        assert_eq!(byte_range("bytes=0-1, 5-6", 1000), Some((0, 1)), "first range only");
+        let big = 100 * MAX_RANGE;
+        assert_eq!(byte_range("bytes=0-", big), Some((0, MAX_RANGE - 1)), "capped");
+    }
+
+    #[test]
+    fn ranges_that_cannot_be_served() {
+        assert_eq!(byte_range("bytes=1000-", 1000), None, "starts past the end");
+        assert_eq!(byte_range("bytes=5-2", 1000), None);
+        assert_eq!(byte_range("bytes=-0", 1000), None);
+        assert_eq!(byte_range("bytes=0-1", 0), None, "empty file");
+        assert_eq!(byte_range("items=0-1", 1000), None);
+        assert_eq!(byte_range("bytes=a-b", 1000), None);
+    }
+
+    #[tokio::test]
+    async fn reads_just_the_range() {
+        let path = std::env::temp_dir().join(format!("kwek-range-{}", uuid::Uuid::new_v4()));
+        tokio::fs::write(&path, b"0123456789").await.unwrap();
+        assert_eq!(read_range(&path, 2, 4).await.unwrap(), b"234");
+        let _ = tokio::fs::remove_file(&path).await;
+    }
 
     #[test]
     fn favicons_only_for_plain_host_names() {

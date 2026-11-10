@@ -58,7 +58,8 @@ pub struct SpaceSummary {
 pub struct AttachmentView {
     pub name: String,
     pub content_type: Option<String>,
-    /// `image` renders inline via `media_url`; `file` downloads; `drive` opens in the browser.
+    /// `image` renders inline and `video` plays, both via `media_url`; `file` downloads;
+    /// `drive` opens in the browser.
     pub kind: String,
     pub media_url: Option<String>,
     pub resource: Option<String>,
@@ -497,10 +498,11 @@ pub fn media_url(resource: &str) -> String {
 fn attachment_view(a: &Attachment) -> AttachmentView {
     let resource = a.attachment_data_ref.as_ref().and_then(|r| r.resource_name.clone());
     let drive = a.drive_data_ref.as_ref().and_then(|d| d.drive_file_id.clone());
-    let is_image = a.content_type.as_deref().is_some_and(|c| c.starts_with("image/"));
+    let is_type = |prefix: &str| a.content_type.as_deref().is_some_and(|c| c.starts_with(prefix));
     let (kind, media_url, open_url) = match (&resource, &drive) {
         (_, Some(id)) => ("drive", None, Some(format!("https://drive.google.com/open?id={id}"))),
-        (Some(r), None) if is_image => ("image", Some(media_url(r)), None),
+        (Some(r), None) if is_type("image/") => ("image", Some(media_url(r)), None),
+        (Some(r), None) if is_type("video/") => ("video", Some(media_url(r)), None),
         (Some(_), None) => ("file", None, None),
         (None, None) => ("file", None, a.download_uri.clone()),
     };

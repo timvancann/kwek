@@ -15,6 +15,10 @@ use crate::error::{Error, Result};
 const MAX_IN_FLIGHT: usize = 4;
 /// Uploads take their own slots: a slow one must not hold up sync and text sends.
 const MAX_UPLOADS: usize = 2;
+/// Media downloads too: a video can take minutes.
+const MAX_DOWNLOADS: usize = 4;
+/// Room for a 200 MB video on a slow line, where the client's own limit is 90 s.
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const MAX_ATTEMPTS: u32 = 6;
 
 #[derive(Clone)]
@@ -23,6 +27,7 @@ pub struct Google {
     tokens: Arc<TokenManager>,
     limiter: Arc<Semaphore>,
     uploads: Arc<Semaphore>,
+    downloads: Arc<Semaphore>,
 }
 
 impl Google {
@@ -32,6 +37,7 @@ impl Google {
             tokens,
             limiter: Arc::new(Semaphore::new(MAX_IN_FLIGHT)),
             uploads: Arc::new(Semaphore::new(MAX_UPLOADS)),
+            downloads: Arc::new(Semaphore::new(MAX_DOWNLOADS)),
         }
     }
 
@@ -61,7 +67,7 @@ impl Google {
 
     /// Raw bytes plus content type, for media downloads.
     pub async fn bytes(&self, url: &str) -> Result<(Vec<u8>, Option<String>)> {
-        self.send(Method::GET, url, None, None).await
+        self.send(Method::GET, url, None, None, true).await
     }
 
     /// A media upload (`uploadType=multipart`): JSON metadata and the file's bytes in one
@@ -74,14 +80,20 @@ impl Google {
         data: &[u8],
     ) -> Result<T> {
         let (body, ct) = multipart_related(metadata, content_type, data);
-        let bytes = self.send(Method::POST, url, Some(Body::Raw(&body, &ct)), None).await?.0;
+        let bytes = self
+            .send(Method::POST, url, Some(Body::Raw(&body, &ct)), None, false)
+            .await?
+            .0;
         Ok(serde_json::from_slice(&bytes)?)
     }
 
     /// A long-poll POST (Pub/Sub pull): outside the in-flight limit, which is for Chat quota,
     /// with its own timeout. A timeout means "nothing arrived" and returns `{}`.
     pub async fn long_poll<T: DeserializeOwned>(&self, url: &str, body: &Value, wait: Duration) -> Result<T> {
-        match self.send(Method::POST, url, Some(Body::Json(body)), Some(wait)).await {
+        match self
+            .send(Method::POST, url, Some(Body::Json(body)), Some(wait), false)
+            .await
+        {
             Ok((bytes, _)) if !bytes.is_empty() => Ok(serde_json::from_slice(&bytes)?),
             Ok(_) | Err(Error::Timeout) => Ok(serde_json::from_str("{}")?),
             Err(e) => Err(e),
@@ -89,7 +101,7 @@ impl Google {
     }
 
     async fn json<T: DeserializeOwned>(&self, method: Method, url: &str, body: Option<&Value>) -> Result<T> {
-        let bytes = self.send(method, url, body.map(Body::Json), None).await?.0;
+        let bytes = self.send(method, url, body.map(Body::Json), None, false).await?.0;
         if bytes.is_empty() {
             return Ok(serde_json::from_str("{}")?);
         }
@@ -97,13 +109,15 @@ impl Google {
     }
 
     /// `long_poll: Some(wait)` skips the limiter, uses `wait` as the timeout and reports a
-    /// timeout as [`Error::Timeout`] without retrying.
+    /// timeout as [`Error::Timeout`] without retrying. `download` is a media download: its own
+    /// slots and a long timeout.
     async fn send(
         &self,
         method: Method,
         url: &str,
         body: Option<Body<'_>>,
         long_poll: Option<Duration>,
+        download: bool,
     ) -> Result<(Vec<u8>, Option<String>)> {
         let mut refreshed = false;
         let mut attempt = 0;
@@ -112,10 +126,11 @@ impl Google {
             // A permit per attempt, released before any backoff sleep, so one throttled call
             // does not hold up everything else.
             let upload = matches!(body, Some(Body::Raw(..)));
-            let permit = match (long_poll, upload) {
-                (Some(_), _) => None,
-                (None, true) => Some(self.uploads.acquire().await.expect("limiter closed")),
-                (None, false) => Some(self.limiter.acquire().await.expect("limiter closed")),
+            let permit = match (long_poll, upload, download) {
+                (Some(_), _, _) => None,
+                (None, true, _) => Some(self.uploads.acquire().await.expect("limiter closed")),
+                (None, false, true) => Some(self.downloads.acquire().await.expect("limiter closed")),
+                (None, false, false) => Some(self.limiter.acquire().await.expect("limiter closed")),
             };
             let token = self.tokens.access_token().await?;
             let mut req = self.http.request(method.clone(), url).bearer_auth(&token);
@@ -134,12 +149,15 @@ impl Google {
             if let Some(wait) = long_poll {
                 req = req.timeout(wait);
             }
+            if download {
+                req = req.timeout(DOWNLOAD_TIMEOUT);
+            }
             let resp = match req.send().await {
                 Ok(r) => r,
                 Err(e) if long_poll.is_some() && e.is_timeout() => return Err(Error::Timeout),
-                // An upload that timed out would only time out again; one that never connected
+                // A transfer that timed out would only time out again; one that never connected
                 // is worth another go.
-                Err(e) if attempt < 3 && (e.is_connect() || (e.is_timeout() && !upload)) => {
+                Err(e) if attempt < 3 && (e.is_connect() || (e.is_timeout() && !upload && !download)) => {
                     drop(permit);
                     tokio::time::sleep(backoff(attempt)).await;
                     continue;

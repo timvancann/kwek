@@ -180,11 +180,12 @@ pub async fn get_thread(state: State<'_, AppState>, thread: String) -> Res<Vec<M
     Ok(cached)
 }
 
-/// Well under Google Chat's 200 MB: an image is read into memory to upload, and a big one
-/// on a slow connection would take minutes.
+/// Well under Google Chat's 200 MB: a file is read into memory to upload, and a big one on a
+/// slow connection would take minutes.
 const MAX_ATTACHMENT: usize = 50 * 1024 * 1024;
 
-/// Keeps an image the user added to the composer in the outbox folder until it is sent.
+/// Keeps an image or video the user added to the composer in the outbox folder until it is
+/// sent.
 /// The body is the raw file; `x-name` (percent-encoded) and `x-type` describe it. Returns an
 /// id for `send_message`: the webview never names a path to upload.
 #[tauri::command]
@@ -205,13 +206,22 @@ pub async fn stage_attachment(state: State<'_, AppState>, request: tauri::ipc::R
         .trim()
         .to_owned();
     let content_type = header("x-type");
-    if !content_type.starts_with("image/") {
-        return Err("kwek can only send images for now.".into());
+    if !content_type.starts_with("image/") && !content_type.starts_with("video/") {
+        return Err("kwek can only send images and videos for now.".into());
     }
     if data.len() > MAX_ATTACHMENT {
-        return Err("That image is over 50 MB, too big to send from kwek.".into());
+        return Err("That file is over 50 MB, too big to send from kwek.".into());
     }
-    let name = if name.is_empty() { "image".to_owned() } else { name };
+    let name = if name.is_empty() {
+        if content_type.starts_with("video/") {
+            "video"
+        } else {
+            "image"
+        }
+        .to_owned()
+    } else {
+        name
+    };
     let id = uuid::Uuid::new_v4().simple().to_string();
     let dir = state.data_dir.join("outbox");
     let path = dir.join(&id);
@@ -223,7 +233,7 @@ pub async fn stage_attachment(state: State<'_, AppState>, request: tauri::ipc::R
     })
     .await
     .map_err(|e| e.to_string())?
-    .map_err(|e| format!("Could not keep the image for sending: {e}"))?;
+    .map_err(|e| format!("Could not keep the file for sending: {e}"))?;
     state.staged.lock().unwrap().insert(
         id.clone(),
         Outgoing {
@@ -260,7 +270,7 @@ pub async fn send_message(
         let mut staged = state.staged.lock().unwrap();
         // All or nothing: check every id before taking any out of the staging map.
         if ids.iter().any(|id| !staged.contains_key(id)) {
-            return Err("An image is no longer attached. Add it again.".into());
+            return Err("An image or video is no longer attached. Add it again.".into());
         }
         ids.iter()
             .filter_map(|id| staged.remove(id).map(|f| (id.clone(), f)))
@@ -388,7 +398,11 @@ pub async fn download_attachment(
     resource: String,
     name: String,
 ) -> Res<String> {
-    let (bytes, _) = state.engine.media(&state.media_dir, &resource).await.map_err(msg)?;
+    let (cached, _) = state
+        .engine
+        .media_file(&state.media_dir, &resource)
+        .await
+        .map_err(msg)?;
     let dir = dirs_downloads().ok_or("No Downloads folder found.")?;
     let safe: String = name
         .chars()
@@ -415,7 +429,7 @@ pub async fn download_attachment(
         path = dir.join(format!("{stem} ({n}){ext}"));
         n += 1;
     }
-    tokio::fs::write(&path, bytes).await.map_err(|e| e.to_string())?;
+    tokio::fs::copy(&cached, &path).await.map_err(|e| e.to_string())?;
     // Mark it as downloaded, like a browser does, so Gatekeeper checks it before it can run.
     // Without the flag, a malicious `.command` or `.app` attachment would open unchecked.
     if let Err(e) = quarantine(&path) {

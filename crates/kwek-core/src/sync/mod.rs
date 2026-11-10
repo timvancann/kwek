@@ -103,6 +103,8 @@ pub struct Engine {
     own_subs: StdMutex<Vec<String>>,
     /// Downloaded attachments; deleted on logout.
     media_dir: Option<std::path::PathBuf>,
+    /// One download per attachment at a time: a video asks for several ranges at once.
+    downloads: StdMutex<HashMap<String, Arc<Mutex<()>>>>,
     /// Search by meaning; None when the model is not part of this build.
     embedder: Option<Arc<dyn Embedder>>,
     /// Stretch vectors by text hash, loaded on first use. Lock order: db, then this.
@@ -152,6 +154,7 @@ impl Engine {
             read_marks: StdMutex::new(HashMap::new()),
             own_subs: StdMutex::new(Vec::new()),
             media_dir,
+            downloads: StdMutex::new(HashMap::new()),
             embedder,
             vectors: StdMutex::new(None),
             index_wake: Notify::new(),
@@ -1603,7 +1606,7 @@ impl Engine {
             for f in files {
                 let data = tokio::fs::read(&f.path).await.map_err(|e| {
                     Error::Other(format!(
-                        "{} is no longer in kwek's outbox ({e}). Discard this message and add the image again.",
+                        "{} is no longer in kwek's outbox ({e}). Discard this message and add it again.",
                         f.name
                     ))
                 })?;
@@ -1939,14 +1942,24 @@ impl Engine {
         }
     }
 
-    /// Bytes for an attachment, from the disk cache or the API.
-    /// Attachment bytes from the disk cache (a file per resource, named by its hash, with the
-    /// content type beside it) or the API.
+    /// Bytes for an attachment, from the disk cache or the API (see [`Engine::media_file`]).
+    pub async fn media(&self, cache_dir: &std::path::Path, resource: &str) -> Result<(Vec<u8>, Option<String>)> {
+        let (path, mime) = self.media_file(cache_dir, resource).await?;
+        Ok((tokio::fs::read(&path).await?, mime))
+    }
+
+    /// An attachment in the disk cache (a file per resource, named by its hash, with the
+    /// content type beside it), downloaded first when it isn't there yet. Returns its path
+    /// and content type.
     ///
     /// The resource name comes from the webview, so it must be one that appears in a cached
     /// message: otherwise a crafted name (`../spaces?...`) would let the page read any Chat
     /// endpoint with the user's token.
-    pub async fn media(&self, cache_dir: &std::path::Path, resource: &str) -> Result<(Vec<u8>, Option<String>)> {
+    pub async fn media_file(
+        &self,
+        cache_dir: &std::path::Path,
+        resource: &str,
+    ) -> Result<(std::path::PathBuf, Option<String>)> {
         use sha2::{Digest, Sha256};
         let r = resource.to_owned();
         let known = self.db.call(move |c| read::is_known_attachment(c, &r)).await?;
@@ -1961,21 +1974,39 @@ impl Engine {
         let key = format!("{:x}", Sha256::digest(resource.as_bytes()));
         let path = cache_dir.join(&key);
         let mime_path = cache_dir.join(format!("{key}.type"));
-        if let Ok(bytes) = tokio::fs::read(&path).await {
-            let mime = tokio::fs::read_to_string(&mime_path).await.ok();
-            let mime = sniff_image(&bytes).map(str::to_owned).or(mime);
-            return Ok((bytes, mime));
+        let gate = self.downloads.lock().unwrap().entry(key.clone()).or_default().clone();
+        let held = gate.lock().await;
+        let result = async {
+            if tokio::fs::try_exists(&path).await? {
+                let mime = tokio::fs::read_to_string(&mime_path).await.ok();
+                let head = read_head(&path).await?;
+                return Ok((path.clone(), sniff_media(&head).map(str::to_owned).or(mime)));
+            }
+            let (bytes, mime) = self.chat.download_media(resource).await?;
+            // Google serves media as application/octet-stream, which WebKit will neither draw
+            // in an <img> nor play in a <video>; the bytes say what the file really is.
+            let mime = sniff_media(&bytes).map(str::to_owned).or(mime);
+            tokio::fs::create_dir_all(cache_dir).await?;
+            if let Some(m) = &mime {
+                tokio::fs::write(&mime_path, m).await?;
+            }
+            // Written aside, then moved in: a file at `path` is always complete.
+            let part = cache_dir.join(format!("{key}.part"));
+            tokio::fs::write(&part, &bytes).await?;
+            tokio::fs::rename(&part, &path).await?;
+            Ok((path.clone(), mime))
         }
-        let (bytes, mime) = self.chat.download_media(resource).await?;
-        // Google serves media as application/octet-stream, which WebKit will not draw in an
-        // <img>; the bytes say what the image really is.
-        let mime = sniff_image(&bytes).map(str::to_owned).or(mime);
-        tokio::fs::create_dir_all(cache_dir).await?;
-        tokio::fs::write(&path, &bytes).await?;
-        if let Some(m) = &mime {
-            tokio::fs::write(&mime_path, m).await?;
+        .await;
+        // Anyone still waiting on this gate finds the file (or tries again) once it opens. A
+        // waiter that comes through after a failed download must not drop a newer gate.
+        {
+            let mut downloads = self.downloads.lock().unwrap();
+            if downloads.get(&key).is_some_and(|g| Arc::ptr_eq(g, &gate)) {
+                downloads.remove(&key);
+            }
         }
-        Ok((bytes, mime))
+        drop(held);
+        result
     }
 
     pub fn last_own_message(&self, space: &str, thread: Option<&str>) -> Result<Option<MessageView>> {
@@ -1992,15 +2023,36 @@ impl Engine {
     }
 }
 
-/// The image type from the file's first bytes.
-fn sniff_image(b: &[u8]) -> Option<&'static str> {
+/// The image or video type from the file's first bytes.
+fn sniff_media(b: &[u8]) -> Option<&'static str> {
     match b {
         [0x89, b'P', b'N', b'G', ..] => Some("image/png"),
         [0xFF, 0xD8, 0xFF, ..] => Some("image/jpeg"),
         [b'G', b'I', b'F', b'8', ..] => Some("image/gif"),
         [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P', ..] => Some("image/webp"),
+        [0x1A, 0x45, 0xDF, 0xA3, ..] => Some("video/webm"),
+        // ISO base media (MP4, QuickTime, HEIF): the major brand after `ftyp` says which.
+        [_, _, _, _, b'f', b't', b'y', b'p', brand @ ..] if brand.len() >= 4 => match &brand[..4] {
+            b"qt  " => Some("video/quicktime"),
+            b"heic" | b"heix" | b"heim" | b"heis" | b"mif1" | b"msf1" => Some("image/heic"),
+            b"avif" | b"avis" => Some("image/avif"),
+            b"M4A " | b"M4B " => Some("audio/mp4"),
+            _ => Some("video/mp4"),
+        },
         _ => None,
     }
+}
+
+/// The first bytes of a file, enough for [`sniff_media`].
+async fn read_head(path: &std::path::Path) -> Result<Vec<u8>> {
+    use tokio::io::AsyncReadExt;
+    let mut head = Vec::with_capacity(16);
+    tokio::fs::File::open(path)
+        .await?
+        .take(16)
+        .read_to_end(&mut head)
+        .await?;
+    Ok(head)
 }
 
 /// Errors that mean "live events are not set up for this project/user" rather than a

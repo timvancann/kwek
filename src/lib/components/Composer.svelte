@@ -1,6 +1,10 @@
 <script lang="ts" module>
-  /** An image in the composer: shown from `url`, kept for sending once `id` is set. */
-  export type DraftImage = { key: string; name: string; url: string; id: string | null; error: string | null };
+  /** An image or video in the composer: shown from `url`, kept for sending once `id` is set. */
+  export type DraftImage = { key: string; name: string; url: string; video: boolean; id: string | null; error: string | null };
+
+  /** Matches the limit in Rust; checked here too so a big video isn't read only to be refused. */
+  const MAX_ATTACHMENT = 50 * 1024 * 1024;
+  const sendable = (f: File) => f.type.startsWith("image/") || f.type.startsWith("video/");
 
   // Unsent drafts per conversation, text and images.
   const drafts = new Map<string, string>();
@@ -166,7 +170,8 @@
     for (const [k, list] of draftImages) draftImages.set(k, list.map((i) => (i.key === key ? { ...i, ...change } : i)));
   }
 
-  /** Adds images to the draft and keeps each for sending straight away, so sending is quick. */
+  /** Adds images and videos to the draft and keeps each for sending straight away, so sending
+   * is quick. */
   /** Pasted screenshots all arrive as "image.png"; number them so each can be told apart. */
   let pasted = 0;
   function displayName(file: File) {
@@ -175,16 +180,27 @@
 
   function addFiles(files: Iterable<File>) {
     if (editing) {
-      app.say("Images can't be added to an edit.");
+      app.say("Images and videos can't be added to an edit.");
       return;
     }
     let added = 0;
     for (const file of files) {
-      if (!file.type.startsWith("image/")) {
-        toast.error(`${file.name || "That file"} isn't an image. kwek can only send images for now.`);
+      if (!sendable(file)) {
+        toast.error(`${file.name || "That file"} isn't an image or a video. kwek can only send those for now.`);
         continue;
       }
-      const item: DraftImage = { key: crypto.randomUUID(), name: displayName(file), url: URL.createObjectURL(file), id: null, error: null };
+      if (file.size > MAX_ATTACHMENT) {
+        toast.error(`${file.name || "That file"} is over 50 MB, too big to send from kwek.`);
+        continue;
+      }
+      const item: DraftImage = {
+        key: crypto.randomUUID(),
+        name: displayName(file),
+        url: URL.createObjectURL(file),
+        video: file.type.startsWith("video/"),
+        id: null,
+        error: null,
+      };
       images = [...images, item];
       added++;
       api
@@ -200,7 +216,7 @@
         })
         .catch((e) => patch(item.key, { error: errorText(e) }));
     }
-    if (added) app.say(`${added} ${added === 1 ? "image" : "images"} added, preparing.`);
+    if (added) app.say(`${added} ${added === 1 ? "attachment" : "attachments"} added, preparing.`);
     el?.focus();
   }
 
@@ -223,10 +239,10 @@
   }
 
   /** Why Send is off, when images are the reason. */
-  const blockedBy = $derived(staging ? "Preparing images" : broken ? "Remove the image that couldn't be added to send" : null);
+  const blockedBy = $derived(staging ? "Preparing attachments" : broken ? "Remove the attachment that couldn't be added to send" : null);
 
   function onPaste(e: ClipboardEvent) {
-    const files = [...(e.clipboardData?.files ?? [])].filter((f) => f.type.startsWith("image/"));
+    const files = [...(e.clipboardData?.files ?? [])].filter(sendable);
     if (files.length && !editing) {
       e.preventDefault();
       addFiles(files);
@@ -352,19 +368,26 @@
   >
     {#if dragging}
       <div class="pointer-events-none absolute inset-0 z-10 grid place-items-center rounded-xl bg-accent-soft/90 text-[14px] font-medium text-accent">
-        Drop images to add them
+        Drop images or videos to add them
       </div>
     {/if}
     {#if images.length}
-      <ul class="m-0 flex list-none flex-wrap gap-2 px-3 pt-3" aria-label="Images to send">
+      <ul class="m-0 flex list-none flex-wrap gap-2 px-3 pt-3" aria-label="Attachments to send">
         {#each images as img (img.key)}
+          {@const label = img.error ? `${img.name}, couldn't be added` : img.id ? img.name : `${img.name}, preparing`}
           <li class={cn("relative size-16 overflow-hidden rounded-lg border", img.error ? "border-destructive" : "border-border")}>
-            <img
-              src={img.url}
-              alt={img.error ? `${img.name}, couldn't be added` : img.id ? img.name : `${img.name}, preparing`}
-              class={cn("size-full object-cover", (!img.id || img.error) && "opacity-50")}
-              draggable="false"
-            />
+            {#if img.video}
+              <!-- Its first frame, as the preview. -->
+              <video
+                src={img.url}
+                muted
+                preload="metadata"
+                aria-label="Video {label}"
+                class={cn("size-full bg-black object-cover", (!img.id || img.error) && "opacity-50")}
+              ></video>
+            {:else}
+              <img src={img.url} alt={label} class={cn("size-full object-cover", (!img.id || img.error) && "opacity-50")} draggable="false" />
+            {/if}
             {#if !img.id && !img.error}
               <span class="absolute inset-0 grid place-items-center" aria-hidden="true">
                 <LoaderCircle class="size-5 animate-spin text-foreground" />
@@ -374,7 +397,7 @@
               id="remove-{img.key}"
               type="button"
               class="absolute top-0.5 right-0.5 grid size-5 place-items-center rounded-full bg-foreground/75 text-background hover:bg-foreground"
-              aria-label="Remove image {img.name}"
+              aria-label="Remove {img.name}"
               title={img.error ?? `Remove ${img.name}`}
               onclick={() => removeImage(img)}
             >
@@ -394,8 +417,8 @@
       <button
         type="button"
         class="inline-flex size-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground"
-        aria-label="Add images"
-        title="Add images (or paste or drop them here)"
+        aria-label="Add images or videos"
+        title="Add images or videos (or paste or drop them here)"
         onclick={() => fileInput?.click()}
       >
         <ImagePlus class="size-4" aria-hidden="true" />
@@ -403,7 +426,7 @@
       <input
         bind:this={fileInput}
         type="file"
-        accept="image/*"
+        accept="image/*,video/*"
         multiple
         class="hidden"
         tabindex="-1"

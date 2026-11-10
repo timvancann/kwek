@@ -88,7 +88,7 @@ class AppState {
   reactTo = $state<MessageView | null>(null);
   /** Meetings from the user's calendar, and whether it can be read. */
   calendar = $state<CalendarView>({ state: "off", detail: null, meetings: [] });
-  /** The image viewer: a message's images, opened at `index` (among its images). */
+  /** The viewer: a message's images and videos, opened at `index` (among those, see `viewable`). */
   viewing = $state<{ message: MessageView; index: number; from?: HTMLElement } | null>(null);
   announce = $state("");
   windowFocused = $state(true);
@@ -517,6 +517,11 @@ class AppState {
       }
     }
   }
+}
+
+/** What the viewer steps through: a message's images and videos, in order. */
+export function viewable(m: MessageView) {
+  return m.attachments.filter((a) => (a.kind === "image" || a.kind === "video") && a.mediaUrl);
 }
 
 /** The text of a message as typed, for editing. Rebuilt from the rendered blocks. */

@@ -120,6 +120,49 @@ fn init_logging(dir: &std::path::Path) -> tracing_appender::non_blocking::Worker
     guard
 }
 
+type MediaResponse = tauri::http::Result<Response<Vec<u8>>>;
+
+/// A whole file for the `media:` scheme. Media never changes under its URL.
+fn whole_file(bytes: Vec<u8>, mime: Option<String>) -> MediaResponse {
+    Response::builder()
+        .header(
+            header::CONTENT_TYPE,
+            mime.unwrap_or_else(|| "application/octet-stream".into()),
+        )
+        .header(header::ACCEPT_RANGES, "bytes")
+        .header(header::CACHE_CONTROL, "max-age=31536000, immutable")
+        .body(bytes)
+}
+
+/// An attachment for the `media:` scheme. A `<video>` asks for byte ranges and does not play
+/// without them; an `<img>` asks for the whole file.
+async fn attachment(state: &AppState, resource: &str, range: Option<&str>) -> kwek_core::error::Result<MediaResponse> {
+    let (path, mime) = state.engine.media_file(&state.media_dir, resource).await?;
+    let Some(range) = range else {
+        return Ok(whole_file(tokio::fs::read(&path).await?, mime));
+    };
+    let total = tokio::fs::metadata(&path).await?.len();
+    let resp = Response::builder()
+        .header(
+            header::CONTENT_TYPE,
+            mime.unwrap_or_else(|| "application/octet-stream".into()),
+        )
+        .header(header::ACCEPT_RANGES, "bytes");
+    Ok(match kwek_core::media::byte_range(range, total) {
+        Some((start, end)) => {
+            let bytes = kwek_core::media::read_range(&path, start, end).await?;
+            resp.status(206)
+                .header(header::CONTENT_RANGE, format!("bytes {start}-{end}/{total}"))
+                .header(header::CONTENT_LENGTH, bytes.len())
+                .body(bytes)
+        }
+        None => resp
+            .status(416)
+            .header(header::CONTENT_RANGE, format!("bytes */{total}"))
+            .body(Vec::new()),
+    })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default();
@@ -139,24 +182,27 @@ pub fn run() {
         .register_asynchronous_uri_scheme_protocol("media", |ctx, request, responder| {
             let app = ctx.app_handle().clone();
             let path = request.uri().path().trim_start_matches('/').to_owned();
+            let range = request
+                .headers()
+                .get(header::RANGE)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned);
             tauri::async_runtime::spawn(async move {
                 let state = app.state::<AppState>();
                 let decode = |s: &str| percent_encoding::percent_decode_str(s).decode_utf8_lossy().to_string();
                 let result = if let Some(url) = path.strip_prefix("avatar/") {
-                    kwek_core::media::avatar(&state.media_dir, &decode(url)).await
+                    kwek_core::media::avatar(&state.media_dir, &decode(url))
+                        .await
+                        .map(|(bytes, mime)| whole_file(bytes, mime))
                 } else if let Some(host) = path.strip_prefix("favicon/") {
-                    kwek_core::media::favicon(&state.media_dir, &decode(host)).await
+                    kwek_core::media::favicon(&state.media_dir, &decode(host))
+                        .await
+                        .map(|(bytes, mime)| whole_file(bytes, mime))
                 } else {
-                    state.engine.media(&state.media_dir, &decode(&path)).await
+                    attachment(&state, &decode(&path), range.as_deref()).await
                 };
                 let resp = match result {
-                    Ok((bytes, mime)) => Response::builder()
-                        .header(
-                            header::CONTENT_TYPE,
-                            mime.unwrap_or_else(|| "application/octet-stream".into()),
-                        )
-                        .header(header::CACHE_CONTROL, "max-age=31536000, immutable")
-                        .body(bytes),
+                    Ok(resp) => resp,
                     Err(e) => {
                         tracing::debug!("media request failed: {e}");
                         Response::builder().status(404).body(Vec::new())

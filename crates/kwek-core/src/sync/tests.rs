@@ -22,6 +22,9 @@ struct World {
     /// (space, file name, content type, bytes) per upload.
     uploads: Vec<(String, String, String, Vec<u8>)>,
     fail_upload: bool,
+    /// What a media download answers with, and how many there were.
+    media: Option<Vec<u8>>,
+    downloads: usize,
     /// Runs inside the next list_messages call: something else happening mid-request.
     on_list: Option<Box<dyn FnOnce() + Send>>,
     /// A space whose every page is empty yet claims there is more.
@@ -129,7 +132,13 @@ impl ChatApi for Fake {
         let attachment: Vec<Attachment> = attachments
             .iter()
             .map(|r| Attachment {
-                content_type: Some("image/png".into()),
+                // As uploaded: `uploaded/{n}` is the n-th upload.
+                content_type: r["resourceName"]
+                    .as_str()
+                    .and_then(|n| n.strip_prefix("uploaded/"))
+                    .and_then(|n| n.parse::<usize>().ok())
+                    .and_then(|n| w.uploads.get(n - 1))
+                    .map(|u| u.2.clone()),
                 attachment_data_ref: Some(AttachmentDataRef {
                     resource_name: r["resourceName"].as_str().map(str::to_owned),
                 }),
@@ -230,7 +239,18 @@ impl ChatApi for Fake {
         })
     }
     async fn download_media(&self, _: &str) -> Result<(Vec<u8>, Option<String>)> {
-        Ok((b"png".to_vec(), Some("image/png".into())))
+        let media = {
+            let mut w = self.0.lock().unwrap();
+            w.downloads += 1;
+            w.media.clone()
+        };
+        // Slow enough for other requests for the same file to arrive meanwhile.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        // Google's type for every attachment.
+        Ok((
+            media.unwrap_or_else(|| b"png".to_vec()),
+            Some("application/octet-stream".into()),
+        ))
     }
 }
 
@@ -761,6 +781,72 @@ async fn images_upload_with_the_message_and_survive_a_retry() {
     assert_eq!(mine.attachments[0].kind, "image");
     assert!(!path.exists());
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[tokio::test]
+async fn a_sent_video_plays_and_downloads_once() {
+    let f = world();
+    let (e, _) = engine(&f).await;
+    e.bootstrap().await.unwrap();
+    let dir = std::env::temp_dir().join(format!("kwek-video-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("clip.mov");
+    std::fs::write(&path, b"movie").unwrap();
+    let file = Outgoing {
+        path,
+        name: "clip.mov".into(),
+        content_type: "video/quicktime".into(),
+    };
+    let v = e.send_message("spaces/team", None, "", vec![file]).await.unwrap();
+    until(|| e.message_view(&v.name).unwrap().is_none()).await;
+    let sent = e.get_messages("spaces/team", None, 50).unwrap();
+    let video = &sent
+        .iter()
+        .find(|m| !m.attachments.is_empty())
+        .expect("the sent message")
+        .attachments[0];
+    assert_eq!(video.kind, "video");
+    assert!(video.media_url.is_some());
+
+    // Google calls it application/octet-stream; the bytes say QuickTime. The ranges a
+    // <video> asks for at once share one download.
+    let movie = b"\0\0\0\x14ftypqt  \0\0\0\0the rest".to_vec();
+    f.0.lock().unwrap().media = Some(movie.clone());
+    let cache = dir.join("media");
+    let resource = video.resource.clone().unwrap();
+    let (a, b, c) = tokio::join!(
+        e.media_file(&cache, &resource),
+        e.media_file(&cache, &resource),
+        e.media_file(&cache, &resource)
+    );
+    for r in [a, b, c] {
+        let (p, mime) = r.unwrap();
+        assert_eq!(mime.as_deref(), Some("video/quicktime"));
+        assert_eq!(std::fs::read(p).unwrap(), movie);
+    }
+    assert_eq!(f.0.lock().unwrap().downloads, 1);
+    assert!(
+        !std::fs::read_dir(&cache)
+            .unwrap()
+            .any(|f| f.unwrap().path().extension().is_some_and(|x| x == "part")),
+        "nothing half-written left behind"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn media_types_from_the_first_bytes() {
+    assert_eq!(sniff_media(b"\x89PNG\r\n\x1a\n"), Some("image/png"));
+    assert_eq!(sniff_media(b"\0\0\0\x20ftypisom\0\0\x02\0"), Some("video/mp4"));
+    assert_eq!(sniff_media(b"\0\0\0\x14ftypqt  \0\0\0\0"), Some("video/quicktime"));
+    assert_eq!(
+        sniff_media(b"\0\0\0\x18ftypheic\0\0\0\0"),
+        Some("image/heic"),
+        "an iPhone photo"
+    );
+    assert_eq!(sniff_media(b"\x1A\x45\xDF\xA3\x01\0"), Some("video/webm"));
+    assert_eq!(sniff_media(b"\0\0\0\x14ftyp"), None, "too short to name a brand");
+    assert_eq!(sniff_media(b"PK\x03\x04"), None);
 }
 
 #[tokio::test]

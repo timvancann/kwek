@@ -2,7 +2,7 @@
   import * as Dialog from "$lib/components/ui/dialog/index.js";
   import { api, errorText } from "$lib/api";
   import { stamp } from "$lib/format";
-  import { app } from "$lib/state.svelte";
+  import { app, viewable } from "$lib/state.svelte";
   import { toast } from "svelte-sonner";
   import ChevronLeft from "@lucide/svelte/icons/chevron-left";
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
@@ -10,7 +10,7 @@
   import X from "@lucide/svelte/icons/x";
 
   let open = $state(false);
-  /** The image that opened the viewer: focus goes back to it on close. */
+  /** The image or video that opened the viewer: focus goes back to it on close. */
   let from: HTMLElement | undefined;
   $effect(() => {
     open = app.viewing !== null;
@@ -35,9 +35,11 @@
     const name = v.message.name;
     return app.messages[v.message.space]?.find((m) => m.name === name) ?? app.thread?.messages.find((m) => m.name === name) ?? v.message;
   });
-  const images = $derived(message && !message.deleted ? message.attachments.filter((a) => a.kind === "image" && a.mediaUrl) : []);
+  const images = $derived(message && !message.deleted ? viewable(message) : []);
   const index = $derived(app.viewing ? Math.min(app.viewing.index, Math.max(images.length - 1, 0)) : 0);
   const current = $derived(images[index]);
+  /** A video WebKit couldn't play (an unsupported format, or the download failed). */
+  let failed = $state<string | null>(null);
 
   // Nothing left to show (the message was deleted): close rather than show an empty frame.
   $effect(() => {
@@ -51,6 +53,8 @@
   }
 
   function onKeydown(e: KeyboardEvent) {
+    // On a video, the arrow keys seek.
+    if (e.target instanceof HTMLVideoElement) return;
     if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
       e.preventDefault();
       step(e.key === "ArrowRight" ? 1 : -1);
@@ -83,25 +87,44 @@
       <Dialog.Title class="sr-only">{current.name}</Dialog.Title>
       <Dialog.Description class="sr-only">
         Sent by {message.sender.displayName}, {stamp(message.createUs)}.
-        {images.length > 1 ? "Left and right arrow keys show the other images." : ""} Escape closes.
+        {images.length > 1 ? "Left and right arrow keys show the others." : ""} Escape closes.
       </Dialog.Description>
-      <img
-        src={current.mediaUrl}
-        alt={current.name}
-        class="block max-h-[82vh] max-w-[96vw] rounded-lg bg-background object-contain shadow-2xl"
-        draggable="false"
-      />
+      {#if current.kind === "video"}
+        {#if failed === current.mediaUrl}
+          <p class="m-0 grid aspect-video w-[min(960px,96vw)] max-h-[82vh] place-items-center rounded-lg bg-black p-6 text-center text-[14px] text-white/80">
+            kwek can't play this video. Save it to Downloads to watch it.
+          </p>
+        {:else}
+          <!-- svelte-ignore a11y_media_has_caption: Chat videos come without captions. -->
+          <video
+            src={current.mediaUrl}
+            controls
+            autoplay
+            playsinline
+            aria-label={current.name}
+            class="block aspect-video max-h-[82vh] w-[min(960px,96vw)] rounded-lg bg-black object-contain shadow-2xl"
+            onerror={() => (failed = current.mediaUrl)}
+          ></video>
+        {/if}
+      {:else}
+        <img
+          src={current.mediaUrl}
+          alt={current.name}
+          class="block max-h-[82vh] max-w-[96vw] rounded-lg bg-background object-contain shadow-2xl"
+          draggable="false"
+        />
+      {/if}
       <div class="flex max-w-[96vw] items-center gap-1 rounded-full bg-popover py-1 pr-1 pl-4 text-[13px] shadow-lg">
         <span class="max-w-80 truncate font-medium" title={current.name}>{current.name}</span>
         <span class="mr-2 ml-2 shrink-0 text-muted-foreground">
           {message.sender.displayName}, {stamp(message.createUs)}
         </span>
         {#if images.length > 1}
-          <button type="button" class={tool} aria-label="Previous image" title="Previous image (Left arrow)" onclick={() => step(-1)}>
+          <button type="button" class={tool} aria-label="Previous" title="Previous (Left arrow)" onclick={() => step(-1)}>
             <ChevronLeft class="size-4" aria-hidden="true" />
           </button>
           <span class="shrink-0 text-muted-foreground tabular-nums">{index + 1} of {images.length}</span>
-          <button type="button" class={tool} aria-label="Next image" title="Next image (Right arrow)" onclick={() => step(1)}>
+          <button type="button" class={tool} aria-label="Next" title="Next (Right arrow)" onclick={() => step(1)}>
             <ChevronRight class="size-4" aria-hidden="true" />
           </button>
         {/if}

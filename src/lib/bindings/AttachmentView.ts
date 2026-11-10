@@ -2,6 +2,7 @@
 
 export type AttachmentView = { name: string, contentType: string | null, 
 /**
- * `image` renders inline via `media_url`; `file` downloads; `drive` opens in the browser.
+ * `image` renders inline and `video` plays, both via `media_url`; `file` downloads;
+ * `drive` opens in the browser.
  */
 kind: string, mediaUrl: string | null, resource: string | null, openUrl: string | null, };
