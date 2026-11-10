@@ -17,17 +17,19 @@ impl IdleSource for SystemIdle {
         // kCGEventSourceStateCombinedSessionState (0), kCGAnyInputEventType (~0).
         // SAFETY: a plain query with constant arguments; it reads no memory of ours.
         let secs = unsafe { CGEventSourceSecondsSinceLastEventType(0, u32::MAX) };
+        // A reading that makes no sense counts as away: kwek must never claim someone is
+        // active on a guess. Google's own activity tracking still applies.
         if secs.is_finite() && secs >= 0.0 {
             secs as u64
         } else {
-            0
+            u64::MAX
         }
     }
 
-    /// Not measured here yet: counts as always at the computer.
+    /// Not measured here yet: never "at the computer", so kwek doesn't mark anyone active.
     #[cfg(not(target_os = "macos"))]
     fn idle_secs(&self) -> u64 {
-        0
+        u64::MAX
     }
 }
 

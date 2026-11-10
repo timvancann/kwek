@@ -34,8 +34,8 @@ pub const IDLE_AFTER_SECS: u64 = 5 * 60;
 pub const STALE_AFTER: Micros = 3 * MINUTE;
 /// Messages older than this (by the sender's clock) are ignored.
 const MAX_AGE: Micros = 10 * MINUTE;
-/// ...and so are ones from more than this far in the future: a clock that's off.
-const MAX_AHEAD: Micros = 2 * MINUTE;
+/// ...and so are ones from more than this far in the future: a clock that's way off.
+const MAX_AHEAD: Micros = 10 * MINUTE;
 const MAX_TEXT: usize = 100;
 /// The longest real emoji sequences (families, flags with tags) stay well under this.
 const MAX_EMOJI_CHARS: usize = 16;
@@ -331,13 +331,14 @@ impl HttpAvailability {
     }
 }
 
-/// The Availability resource as far as kwek reads it.
-pub fn parse_own(v: &Value) -> Own {
+/// The Availability resource as far as kwek reads it. A missing or unknown state is an
+/// error, not a guess: guessing "away" could make kwek think it was set by hand.
+pub fn parse_own(v: &Value) -> Result<Own> {
     let state = v
         .get("state")
         .and_then(|s| s.as_str())
         .and_then(State::from_api)
-        .unwrap_or(State::Away);
+        .ok_or_else(|| Error::Decode(format!("availability without a known state: {:?}", v.get("state"))))?;
     let custom = v.get("customStatus").and_then(|c| {
         let text = c.get("text").and_then(|t| t.as_str()).unwrap_or("").trim().to_owned();
         let emoji = c
@@ -351,21 +352,21 @@ pub fn parse_own(v: &Value) -> Own {
             until_us: c.get("expireTime").and_then(|t| t.as_str()).and_then(ts::parse),
         })
     });
-    Own {
+    Ok(Own {
         state,
         dnd_until: v
             .pointer("/doNotDisturbMetadata/expirationTime")
             .and_then(|t| t.as_str())
             .and_then(ts::parse),
         custom,
-    }
+    })
 }
 
 #[async_trait]
 impl AvailabilityApi for HttpAvailability {
     async fn get(&self) -> Result<Own> {
         let v: Value = self.g.get(CHAT).await?;
-        Ok(parse_own(&v))
+        parse_own(&v)
     }
 
     async fn mark_active(&self, ttl: Micros) -> Result<()> {
@@ -717,16 +718,14 @@ impl Presence {
         let own = match self.api.get().await {
             Ok(o) => o,
             Err(e) => {
-                let access = match &e {
-                    Error::AuthRequired | Error::NoOAuthClient => "off",
-                    e if needs_permission(e) => "needsPermission",
-                    _ => {
-                        tracing::debug!("availability unavailable: {e}");
-                        return;
-                    }
-                };
-                self.inner.lock().unwrap().access = access;
+                match &e {
+                    Error::AuthRequired | Error::NoOAuthClient => self.inner.lock().unwrap().access = "off",
+                    e if needs_permission(e) => self.inner.lock().unwrap().access = "needsPermission",
+                    _ => tracing::debug!("availability unavailable: {e}"),
+                }
                 self.show_own();
+                // Colleagues still go quiet, and their statuses still expire, on screen.
+                self.show_others(now);
                 return;
             }
         };
@@ -1019,7 +1018,11 @@ mod tests {
         assert!(none(&msg(ME, "ACTIVE", NOW), None), "our own message comes back too");
         assert!(none(&msg(SAM, "ONLINE", NOW), None), "no such state");
         assert!(none(&msg(SAM, "ACTIVE", NOW - 11 * MINUTE), None), "too old");
-        assert!(none(&msg(SAM, "ACTIVE", NOW + 5 * MINUTE), None), "from the future");
+        assert!(none(&msg(SAM, "ACTIVE", NOW + 11 * MINUTE), None), "from the future");
+        assert!(
+            !none(&msg(SAM, "ACTIVE", NOW + 5 * MINUTE), None),
+            "a clock a bit fast is fine"
+        );
         assert!(none(b"{not json", None));
         assert!(none(
             br#"{"v":2,"user":"users/sam","state":"ACTIVE","sentAt":"2027-01-15T08:00:00Z"}"#,
@@ -1330,11 +1333,27 @@ mod tests {
             "name": "users/me/availability", "state": "DO_NOT_DISTURB",
             "customStatus": { "text": "Focus", "emoji": { "unicode": "🎧" }, "expireTime": "2027-01-15T09:00:00Z" },
             "doNotDisturbMetadata": { "expirationTime": "2027-01-15T10:00:00Z" }
-        }));
+        }))
+        .unwrap();
         assert_eq!(own.state, State::Dnd);
         assert_eq!(own.dnd_until, ts::parse("2027-01-15T10:00:00Z"));
         let c = own.custom.unwrap();
         assert_eq!((c.emoji.as_str(), c.text.as_str()), ("🎧", "Focus"));
+        assert!(
+            parse_own(&serde_json::json!({ "state": "STATE_UNSPECIFIED" })).is_err(),
+            "no guessing"
+        );
+    }
+
+    #[tokio::test]
+    async fn colleagues_still_go_quiet_when_your_own_status_cant_be_read() {
+        let w = world(State::Active, 10, FakeBus::default());
+        *w.api.fail.lock().unwrap() = Some(403);
+        let sam = msg(SAM, "ACTIVE", NOW);
+        w.p.receive([sam.as_slice()].into_iter(), NOW);
+        w.p.tick(NOW + STALE_AFTER).await;
+        let last = w.sink.presence.lock().unwrap().last().cloned().unwrap();
+        assert_eq!(last.state, None, "gone quiet");
     }
 
     #[test]
