@@ -4,7 +4,7 @@ members = ["crates/kwek-core", "src-tauri"]
 
 [workspace.package]
 edition = "2024"
-version = "0.1.0"
+version = "0.2.0"
 # Apache-2.0 with the Commons Clause, which SPDX cannot express.
 license-file = "LICENSE"
 
