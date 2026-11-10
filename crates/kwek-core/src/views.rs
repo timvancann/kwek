@@ -116,6 +116,34 @@ pub struct MessageView {
     pub call: Option<CallView>,
 }
 
+/// A colleague's presence, from what their kwek last broadcast.
+#[derive(Debug, Clone, Serialize, TS, PartialEq)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct PresenceView {
+    /// `users/{id}`
+    pub user: String,
+    /// `active`, `idle`, `away` or `dnd`; None once their kwek has gone quiet (no dot).
+    pub state: Option<String>,
+    /// When their kwek was last heard from (this machine's clock).
+    #[ts(type = "number")]
+    pub last_seen_us: Micros,
+    #[ts(type = "number | null")]
+    pub dnd_until_us: Option<Micros>,
+    /// Left out once it has expired.
+    pub custom: Option<CustomStatusView>,
+}
+
+#[derive(Debug, Clone, Serialize, TS, PartialEq)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct CustomStatusView {
+    pub emoji: String,
+    pub text: String,
+    #[ts(type = "number | null")]
+    pub until_us: Option<Micros>,
+}
+
 /// A meeting from the user's calendar, for the sidebar and reminders.
 #[derive(Debug, Clone, Serialize, TS, PartialEq)]
 #[serde(rename_all = "camelCase")]

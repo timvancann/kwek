@@ -11,6 +11,7 @@ pub mod events;
 pub mod google;
 pub mod media;
 pub mod people;
+pub mod presence;
 pub mod render;
 pub mod search;
 pub mod sync;
