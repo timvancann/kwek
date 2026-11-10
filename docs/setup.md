@@ -18,6 +18,14 @@ gcloud pubsub topics add-iam-policy-binding chat-events --project=$P \
 
 The topic carries live events (new messages, edits, reactions, read state) to the app. Keep the name `chat-events`: the downloaded app looks for it. (A build of your own can use another name, with `KWEK_PUBSUB_TOPIC=<name>`.)
 
+Optional, when several people in your Workspace use kwek from this project: a second topic
+lets each kwek tell the others whether its person is around, so everyone sees each other's
+status dot. Without it kwek works the same, minus colleagues' dots.
+
+```sh
+gcloud pubsub topics create kwek-presence --project=$P --message-retention-duration=10m
+```
+
 ### If the publisher grant is refused
 
 Organisations with domain-restricted sharing (`iam.allowedPolicyMemberDomains`) refuse Google's service agent. An org policy admin can allow it for this project, add the binding, and remove the override again; the effective policy then returns to the org's:
@@ -47,6 +55,8 @@ In https://console.cloud.google.com with your project selected, open **Google Au
    - `https://www.googleapis.com/auth/directory.readonly`
    - `https://www.googleapis.com/auth/userinfo.profile` and `userinfo.email` (who is signed in; Internal apps may request them without listing them)
    - `https://www.googleapis.com/auth/calendar.events.readonly` (meeting reminders with a Join button; without it kwek works, minus reminders)
+   - `https://www.googleapis.com/auth/chat.users.availability` (your status: set it, and kwek keeps you shown as active while you're at your computer)
+   - `https://www.googleapis.com/auth/calendar.freebusy` ("busy until 12:00" on a colleague's profile card; busy times only, never what the meeting is)
 4. **Clients**: create client, type **Desktop app**, name `kwek desktop`. Download the JSON and keep it: kwek asks for this client file on first launch.
 
 ## 3. Chat app configuration (console)

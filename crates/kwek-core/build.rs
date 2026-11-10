@@ -19,6 +19,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=KWEK_OAUTH_CLIENT_SECRET");
     println!("cargo:rerun-if-env-changed=KWEK_GCP_PROJECT");
     println!("cargo:rerun-if-env-changed=KWEK_PUBSUB_TOPIC");
+    println!("cargo:rerun-if-env-changed=KWEK_PRESENCE_TOPIC");
 
     let (mut id, mut secret, mut project) = (String::new(), String::new(), String::new());
     if let Ok(text) = std::fs::read_to_string(&file) {

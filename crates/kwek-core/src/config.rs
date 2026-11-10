@@ -24,7 +24,18 @@ pub const SCOPES: &[&str] = &[
     "https://www.googleapis.com/auth/userinfo.email",
     // Meeting reminders: read-only, events only.
     "https://www.googleapis.com/auth/calendar.events.readonly",
+    // Your own presence and status: read it, keep it active while you're at the computer.
+    "https://www.googleapis.com/auth/chat.users.availability",
+    // "Busy until 12:00" on a profile card: busy blocks only, never event details.
+    "https://www.googleapis.com/auth/calendar.freebusy",
 ];
+
+/// The topic kwek users share their presence on, beside the live events topic. Optional:
+/// without it there's no team presence (docs/setup.md).
+pub const PRESENCE_TOPIC: &str = match option_env!("KWEK_PRESENCE_TOPIC") {
+    Some(t) => t,
+    None => "kwek-presence",
+};
 
 pub const KEYCHAIN_SERVICE: &str = "nl.timvancann.kwek";
 
@@ -161,6 +172,15 @@ impl GoogleSetup {
     pub fn subscription(&self, device_id: &str) -> String {
         format!("projects/{}/subscriptions/chat-events-{device_id}", self.project)
     }
+
+    pub fn presence_topic_path(&self) -> String {
+        format!("projects/{}/topics/{PRESENCE_TOPIC}", self.project)
+    }
+
+    /// This device's pull subscription on the presence topic.
+    pub fn presence_subscription(&self, device_id: &str) -> String {
+        format!("projects/{}/subscriptions/kwek-presence-{device_id}", self.project)
+    }
 }
 
 fn path(dir: &Path) -> PathBuf {
@@ -194,6 +214,11 @@ mod tests {
         assert_eq!(s.project, "acme-chat");
         assert_eq!(s.topic_path(), "projects/acme-chat/topics/chat-events");
         assert_eq!(s.subscription("d1"), "projects/acme-chat/subscriptions/chat-events-d1");
+        assert_eq!(s.presence_topic_path(), "projects/acme-chat/topics/kwek-presence");
+        assert_eq!(
+            s.presence_subscription("d1"),
+            "projects/acme-chat/subscriptions/kwek-presence-d1"
+        );
     }
 
     #[test]
