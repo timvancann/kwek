@@ -834,6 +834,25 @@ async fn a_sent_video_plays_and_downloads_once() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+#[tokio::test]
+async fn profile_card_basics_from_the_cache() {
+    let f = world();
+    f.0.lock().unwrap().members.push(Membership {
+        name: "spaces/team/members/ada".into(),
+        member: Some(user("users/ada", None)),
+        ..Default::default()
+    });
+    let (e, _) = engine(&f).await;
+    e.bootstrap().await.unwrap();
+    let (person, dm, spaces) = e.profile_basics("users/ada").unwrap();
+    assert_eq!(person.name, "users/ada");
+    assert_eq!(dm.as_deref(), Some("spaces/dm"));
+    let names: Vec<&str> = spaces.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, ["spaces/team"], "the DM isn't a shared space");
+    let (_, dm, spaces) = e.profile_basics("users/stranger").unwrap();
+    assert!(dm.is_none() && spaces.is_empty());
+}
+
 #[test]
 fn media_types_from_the_first_bytes() {
     assert_eq!(sniff_media(b"\x89PNG\r\n\x1a\n"), Some("image/png"));

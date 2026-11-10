@@ -359,6 +359,38 @@ pub fn members(c: &Connection, space: &str) -> Result<Vec<UserRow>> {
     Ok(st.query_map([space], user_row)?.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
+pub fn user(c: &Connection, name: &str) -> Result<Option<UserRow>> {
+    Ok(c.query_row(
+        "SELECT name, display_name, email, avatar_url FROM user WHERE name = ?1",
+        [name],
+        user_row,
+    )
+    .optional()?)
+}
+
+/// The DM with `user`, if there is one.
+pub fn dm_with(c: &Connection, user: &str) -> Result<Option<String>> {
+    Ok(c.query_row(
+        "SELECT name FROM space WHERE space_type = 'DIRECT_MESSAGE' AND dm_peer = ?1
+         ORDER BY last_active_us DESC LIMIT 1",
+        [user],
+        |r| r.get(0),
+    )
+    .optional()?)
+}
+
+/// Named spaces `user` is a member of (DMs and group chats left out), most active first.
+pub fn spaces_with(c: &Connection, user: &str) -> Result<Vec<(String, Option<String>)>> {
+    let mut st = c.prepare(
+        "SELECT s.name, s.display_name FROM membership m JOIN space s ON s.name = m.space
+         WHERE m.member = ?1 AND s.space_type = 'SPACE'
+         ORDER BY s.last_active_us DESC",
+    )?;
+    Ok(st
+        .query_map([user], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
 /// People with at least one searchable message (sent, not deleted, with text), most recent
 /// writer first.
 pub fn senders(c: &Connection) -> Result<Vec<UserRow>> {

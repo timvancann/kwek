@@ -116,6 +116,52 @@ pub struct MessageView {
     pub call: Option<CallView>,
 }
 
+/// What a profile card shows about someone. Each part is None when it isn't known.
+#[derive(Debug, Clone, Serialize, TS, PartialEq)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ProfileView {
+    pub user: UserRef,
+    pub title: Option<String>,
+    pub department: Option<String>,
+    pub busy: Option<BusyLine>,
+    /// `ok`, `needsPermission` (sign in again) or `unavailable` (not shared, or failed).
+    pub calendar: String,
+    pub next_meeting: Option<NextMeeting>,
+    /// Named spaces you're both in, most active first.
+    pub shared_spaces: Vec<SpaceRef>,
+    /// Your DM with them, when there is one.
+    pub dm_space: Option<String>,
+}
+
+/// Today's calendar in one line: `busyUntil` (then free), `busyRestOfDay`, `freeUntil`, or
+/// `freeRestOfDay`.
+#[derive(Debug, Clone, Serialize, TS, PartialEq)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct BusyLine {
+    pub kind: String,
+    #[ts(type = "number | null")]
+    pub until_us: Option<Micros>,
+}
+
+#[derive(Debug, Clone, Serialize, TS, PartialEq)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct NextMeeting {
+    pub title: String,
+    #[ts(type = "number")]
+    pub start_us: Micros,
+}
+
+#[derive(Debug, Clone, Serialize, TS, PartialEq)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SpaceRef {
+    pub name: String,
+    pub display_name: String,
+}
+
 /// A colleague's presence, from what their kwek last broadcast.
 #[derive(Debug, Clone, Serialize, TS, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -179,6 +225,8 @@ pub struct MeetingView {
     pub open_url: Option<String>,
     /// Where it is (a room, an address), as written in the invite.
     pub location: Option<String>,
+    /// The other guests' emails, lowercased (rooms and you left out).
+    pub attendees: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, TS, PartialEq)]

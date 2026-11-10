@@ -305,6 +305,7 @@ pub fn run() {
             commands::connect_calendar,
             commands::presence,
             commands::own_presence,
+            commands::profile,
             commands::set_status,
             commands::stage_attachment,
             commands::unstage_attachment,

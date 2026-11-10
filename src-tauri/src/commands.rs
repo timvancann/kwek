@@ -4,12 +4,14 @@
 use std::sync::PoisonError;
 
 use kwek_core::Error;
+use kwek_core::calendar::busy_line;
 use kwek_core::config::GoogleSetup;
 use kwek_core::presence::{Choice, NewCustom};
 use kwek_core::sync::{Engine, Outgoing};
+use kwek_core::ts;
 use kwek_core::views::{
-    AuthState, CalendarView, GoogleSetupView, MessageView, OwnPresenceView, PresenceView, SearchResult, SpaceSummary,
-    SyncStatus, UserRef,
+    AuthState, CalendarView, GoogleSetupView, MessageView, OwnPresenceView, PresenceView, ProfileView, SearchResult,
+    SpaceSummary, SyncStatus, UserRef,
 };
 use tauri::{AppHandle, State};
 use tauri_plugin_opener::OpenerExt;
@@ -140,6 +142,44 @@ pub async fn connect_calendar(app: AppHandle, state: State<'_, AppState>) -> Res
     state.agenda.poke();
     state.presence.poke();
     Ok(())
+}
+
+/// Everything a profile card shows. `end_of_day_us` is local midnight, from the webview,
+/// which knows the time zone. Parts that can't be had are left out, never an error.
+#[tauri::command]
+pub async fn profile(state: State<'_, AppState>, user: String, end_of_day_us: i64) -> Res<ProfileView> {
+    let u = user.clone();
+    let (person, dm_space, shared_spaces) = blocking(&state, move |e| e.profile_basics(&u)).await?;
+    let now = ts::now();
+    let busy = async {
+        let Some(email) = &person.email else {
+            return (None, "unavailable");
+        };
+        match state.agenda.busy(email, now, end_of_day_us.max(now + ts::MINUTE)).await {
+            Ok(blocks) => (Some(busy_line(&blocks, now, end_of_day_us)), "ok"),
+            Err(e) if e.http_status() == Some(403) => (None, "needsPermission"),
+            Err(e) => {
+                tracing::debug!("no free/busy for the card: {e}");
+                (None, "unavailable")
+            }
+        }
+    };
+    let (role, (busy, calendar)) = tokio::join!(state.engine.role(&user), busy);
+    let role = role.unwrap_or_else(|e| {
+        tracing::debug!("no role for the card: {e}");
+        Default::default()
+    });
+    let next_meeting = person.email.as_deref().and_then(|m| state.agenda.next_with(m, now));
+    Ok(ProfileView {
+        user: person,
+        title: role.title,
+        department: role.department,
+        busy,
+        calendar: calendar.into(),
+        next_meeting,
+        shared_spaces,
+        dm_space,
+    })
 }
 
 /// Colleagues' presence as last heard.

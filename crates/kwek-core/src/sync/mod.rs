@@ -1244,6 +1244,31 @@ impl Engine {
         })
     }
 
+    /// The cached half of a profile card: who they are, your DM with them, the named spaces
+    /// you share.
+    pub fn profile_basics(&self, user: &str) -> Result<(views::UserRef, Option<String>, Vec<views::SpaceRef>)> {
+        let me = self.me();
+        self.db.with(|c| {
+            let users: HashMap<String, read::UserRow> =
+                read::user(c, user)?.map(|u| (u.name.clone(), u)).into_iter().collect();
+            let person = Builder { me: &me, users: &users }.user(user);
+            let dm = read::dm_with(c, user)?;
+            let spaces = read::spaces_with(c, user)?
+                .into_iter()
+                .map(|(name, display)| views::SpaceRef {
+                    display_name: display.unwrap_or_else(|| "Unnamed space".into()),
+                    name,
+                })
+                .collect();
+            Ok((person, dm, spaces))
+        })
+    }
+
+    /// Job title and department, for a profile card.
+    pub async fn role(&self, user: &str) -> Result<crate::people::Role> {
+        self.people.role(user).await
+    }
+
     pub fn list_members(&self, space: &str) -> Result<Vec<views::UserRef>> {
         let me = self.me();
         self.db.with(|c| {

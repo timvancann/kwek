@@ -14,7 +14,7 @@ use crate::error::{Error, Result};
 use crate::google::{Google, q};
 use crate::sync::{Notification, Sink};
 use crate::ts::{self, DAY, MINUTE, Micros};
-use crate::views::{CalendarView, MeetingView};
+use crate::views::{BusyLine, CalendarView, MeetingView, NextMeeting};
 
 /// How far ahead meetings are fetched.
 const AHEAD: Micros = 7 * DAY;
@@ -31,6 +31,10 @@ const GRACE: Micros = 2 * MINUTE;
 pub trait CalendarApi: Send + Sync {
     /// Timed meetings overlapping `[from, to)`, soonest first.
     async fn upcoming(&self, from: Micros, to: Micros) -> Result<Vec<MeetingView>>;
+    /// Someone's busy blocks in `[from, to)`, from free/busy (no event details).
+    async fn busy(&self, _email: &str, _from: Micros, _to: Micros) -> Result<Vec<(Micros, Micros)>> {
+        Err(Error::Other("free/busy not available".into()))
+    }
 }
 
 pub struct HttpCalendar {
@@ -68,6 +72,40 @@ impl CalendarApi for HttpCalendar {
             }
         }
         Ok(out)
+    }
+
+    async fn busy(&self, email: &str, from: Micros, to: Micros) -> Result<Vec<(Micros, Micros)>> {
+        let body = serde_json::json!({
+            "timeMin": ts::format(from), "timeMax": ts::format(to), "items": [{ "id": email }],
+        });
+        let v: Value = self
+            .g
+            .post("https://www.googleapis.com/calendar/v3/freeBusy", &body)
+            .await?;
+        let cal = v
+            .pointer("/calendars")
+            .and_then(|c| c.get(email))
+            .ok_or_else(|| Error::Other("no free/busy for that calendar".into()))?;
+        // Not shared with you, or no such calendar: an error per calendar, not a failed call.
+        if cal
+            .get("errors")
+            .and_then(|e| e.as_array())
+            .is_some_and(|e| !e.is_empty())
+        {
+            return Err(Error::Other("free/busy not shared".into()));
+        }
+        Ok(cal
+            .get("busy")
+            .and_then(|b| b.as_array())
+            .map(|b| {
+                b.iter()
+                    .filter_map(|p| {
+                        let t = |k: &str| p.get(k).and_then(|t| t.as_str()).and_then(ts::parse);
+                        Some((t("start")?, t("end")?))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default())
     }
 }
 
@@ -126,6 +164,7 @@ pub fn parse_events(v: &Value) -> Vec<MeetingView> {
                     // One line, for the sidebar and a notification.
                     .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
                     .filter(|l| !l.is_empty()),
+                attendees: guests(e),
             })
         })
         .collect()
@@ -141,6 +180,49 @@ fn with_others(e: &Value) -> bool {
         .is_some_and(|a| a.iter().any(|p| !is(p, "self") && !is(p, "resource")));
     let invited = e.get("organizer").is_some_and(|o| !is(o, "self"));
     guest || invited
+}
+
+/// The other guests' emails, lowercased: no rooms, not you.
+fn guests(e: &Value) -> Vec<String> {
+    let is = |p: &Value, k: &str| p.get(k).and_then(|s| s.as_bool()) == Some(true);
+    e.get("attendees")
+        .and_then(|a| a.as_array())
+        .map(|a| {
+            a.iter()
+                .filter(|p| !is(p, "self") && !is(p, "resource"))
+                .filter_map(|p| p.get("email")?.as_str())
+                .map(str::to_ascii_lowercase)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Today's calendar for a profile card: busy now (until when), or free (until when),
+/// from someone's busy blocks. Touching or overlapping blocks count as one.
+pub fn busy_line(blocks: &[(Micros, Micros)], now: Micros, end_of_day: Micros) -> BusyLine {
+    let mut blocks: Vec<(Micros, Micros)> = blocks
+        .iter()
+        .copied()
+        .filter(|&(s, e)| e > now && s < end_of_day && s < e)
+        .collect();
+    blocks.sort();
+    let mut merged: Vec<(Micros, Micros)> = vec![];
+    for (s, e) in blocks {
+        match merged.last_mut() {
+            Some(last) if s <= last.1 => last.1 = last.1.max(e),
+            _ => merged.push((s, e)),
+        }
+    }
+    let line = |kind: &str, until: Option<Micros>| BusyLine {
+        kind: kind.into(),
+        until_us: until,
+    };
+    match merged.first() {
+        Some(&(s, e)) if s <= now && e >= end_of_day => line("busyRestOfDay", None),
+        Some(&(s, e)) if s <= now => line("busyUntil", Some(e)),
+        Some(&(s, _)) => line("freeUntil", Some(s)),
+        None => line("freeRestOfDay", None),
+    }
 }
 
 fn my_response(e: &Value) -> Option<&str> {
@@ -230,6 +312,26 @@ impl Agenda {
 
     pub fn view(&self) -> CalendarView {
         self.view.lock().unwrap().clone()
+    }
+
+    /// The next meeting you have with `email`, from the meetings already fetched.
+    pub fn next_with(&self, email: &str, now: Micros) -> Option<NextMeeting> {
+        let email = email.to_ascii_lowercase();
+        self.view
+            .lock()
+            .unwrap()
+            .meetings
+            .iter()
+            .find(|m| m.start_us > now && m.attendees.contains(&email))
+            .map(|m| NextMeeting {
+                title: m.title.clone(),
+                start_us: m.start_us,
+            })
+    }
+
+    /// Someone's busy blocks, for a profile card.
+    pub async fn busy(&self, email: &str, from: Micros, to: Micros) -> Result<Vec<(Micros, Micros)>> {
+        self.api.busy(email, from, to).await
     }
 
     /// Fetch again now (after signing in, or getting calendar access).
@@ -472,6 +574,40 @@ mod tests {
         assert_eq!(ids, vec!["with-noor", "hidden-guests"]);
         assert_eq!(m[0].location.as_deref(), Some("Room 3.14 Building B"));
         assert_eq!(m[1].location, None, "an empty location is no location");
+        assert_eq!(m[0].attendees, ["noor@acme.nl"], "not you");
+    }
+
+    #[test]
+    fn busy_in_one_line() {
+        let t = |h: i64, m: i64| ts::parse("2026-11-10T00:00:00Z").unwrap() + (h * 60 + m) * MINUTE;
+        let (now, eod) = (t(9, 0), t(23, 0));
+        let line = |blocks: &[(Micros, Micros)]| {
+            let b = busy_line(blocks, now, eod);
+            (b.kind, b.until_us)
+        };
+        assert_eq!(line(&[]), ("freeRestOfDay".into(), None));
+        assert_eq!(line(&[(t(8, 0), t(10, 0))]), ("busyUntil".into(), Some(t(10, 0))));
+        assert_eq!(
+            line(&[(t(10, 0), t(11, 0)), (t(8, 30), t(10, 0)), (t(10, 30), t(12, 0))]),
+            ("busyUntil".into(), Some(t(12, 0))),
+            "back to back counts as one"
+        );
+        assert_eq!(line(&[(t(14, 0), t(15, 0))]), ("freeUntil".into(), Some(t(14, 0))));
+        assert_eq!(
+            line(&[(t(7, 0), t(8, 0))]),
+            ("freeRestOfDay".into(), None),
+            "already over"
+        );
+        assert_eq!(
+            line(&[(t(8, 0), t(23, 30))]),
+            ("busyRestOfDay".into(), None),
+            "out of office"
+        );
+        assert_eq!(
+            line(&[(t(23, 30), t(24, 0))]),
+            ("freeRestOfDay".into(), None),
+            "tomorrow's"
+        );
     }
 
     #[test]
@@ -485,6 +621,7 @@ mod tests {
             join_url: None,
             open_url: None,
             location: None,
+            attendees: vec![],
         }];
         let mut sent = HashSet::new();
         assert!(due_reminders(&m, start - 2 * MINUTE, &sent).is_empty(), "too early");

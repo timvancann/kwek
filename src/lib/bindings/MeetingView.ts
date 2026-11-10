@@ -15,4 +15,8 @@ openUrl: string | null,
 /**
  * Where it is (a room, an address), as written in the invite.
  */
-location: string | null, };
+location: string | null, 
+/**
+ * The other guests' emails, lowercased (rooms and you left out).
+ */
+attendees: Array<string>, };

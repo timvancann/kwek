@@ -23,6 +23,37 @@ pub trait PeopleApi: Send + Sync {
     async fn me(&self) -> Result<Person>;
     /// At most 200 per call; unknown users are simply absent from the result.
     async fn resolve(&self, users: &[String]) -> Result<Vec<Person>>;
+    /// Job title and department from the directory, for a profile card.
+    async fn role(&self, _user: &str) -> Result<Role> {
+        Ok(Role::default())
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Role {
+    pub title: Option<String>,
+    pub department: Option<String>,
+}
+
+/// The current (or else first) organization's title and department.
+fn role_of(v: &serde_json::Value) -> Role {
+    let orgs = v.get("organizations").and_then(|o| o.as_array());
+    let org = orgs.and_then(|o| {
+        o.iter()
+            .find(|x| x.get("current").and_then(|c| c.as_bool()) == Some(true))
+            .or_else(|| o.first())
+    });
+    let field = |k: &str| {
+        org.and_then(|o| o.get(k))
+            .and_then(|t| t.as_str())
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(str::to_owned)
+    };
+    Role {
+        title: field("title"),
+        department: field("department"),
+    }
 }
 
 pub struct HttpPeople {
@@ -117,11 +148,34 @@ impl PeopleApi for HttpPeople {
             .map(ApiPerson::into_person)
             .collect())
     }
+
+    async fn role(&self, user: &str) -> Result<Role> {
+        let id = user.trim_start_matches("users/");
+        let v: serde_json::Value = self
+            .g
+            .get(&format!(
+                "{BASE}/people/{}?personFields=organizations\
+                 &sources=READ_SOURCE_TYPE_PROFILE&sources=READ_SOURCE_TYPE_DOMAIN_CONTACT",
+                q(id)
+            ))
+            .await?;
+        Ok(role_of(&v))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn role_from_the_current_organization() {
+        let r = role_of(&serde_json::json!({ "organizations": [
+            { "title": "Intern", "current": false },
+            { "title": " Product designer ", "department": "Design", "current": true } ] }));
+        assert_eq!(r.title.as_deref(), Some("Product designer"));
+        assert_eq!(r.department.as_deref(), Some("Design"));
+        assert_eq!(role_of(&serde_json::json!({})), Role::default());
+    }
 
     #[test]
     fn maps_person_and_skips_default_photo() {
