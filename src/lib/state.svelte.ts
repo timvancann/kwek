@@ -11,6 +11,8 @@ import {
   type InAppNotice,
   type MessageView,
   type NavPayload,
+  type OwnPresenceView,
+  type PresenceView,
   type SpaceSummary,
   type SyncStatus,
   type UpsertPayload,
@@ -88,6 +90,14 @@ class AppState {
   reactTo = $state<MessageView | null>(null);
   /** Meetings from the user's calendar, and whether it can be read. */
   calendar = $state<CalendarView>({ state: "off", detail: null, meetings: [] });
+  /** Colleagues' presence by user (`users/{id}`), as their kwek last broadcast it. */
+  presence = $state<Record<string, PresenceView>>({});
+  /** Your own status. */
+  ownPresence = $state<OwnPresenceView>({ access: "off", state: null, manualAway: false, dndUntilUs: null, custom: null, team: false });
+  /** The open profile card: whose, and what opened it (it anchors there, focus returns). */
+  profileOf = $state<{ user: string; from: HTMLElement } | null>(null);
+  /** The status picker, anchored to yourself at the bottom of the sidebar. */
+  statusPicker = $state(false);
   /** The viewer: a message's images and videos, opened at `index` (among those, see `viewable`). */
   viewing = $state<{ message: MessageView; index: number; from?: HTMLElement } | null>(null);
   announce = $state("");
@@ -162,6 +172,12 @@ class AppState {
         }),
       ),
       on<CalendarView>("calendar:changed", (c) => (this.calendar = c)),
+      on<PresenceView[]>("presence:changed", (changed) => {
+        // An empty list: signed out, forget everyone.
+        if (changed.length === 0) this.presence = {};
+        for (const p of changed) this.presence[p.user] = p;
+      }),
+      on<OwnPresenceView>("presence:own", (p) => (this.ownPresence = p)),
     ]);
     window.addEventListener("focus", () => {
       this.windowFocused = true;
@@ -171,6 +187,8 @@ class AppState {
     this.auth = await api.authStatus();
     this.status = await api.syncStatus();
     this.calendar = await api.calendar().catch(() => this.calendar);
+    this.ownPresence = await api.ownPresence().catch(() => this.ownPresence);
+    for (const p of await api.presence().catch(() => [])) this.presence[p.user] = p;
     if (this.auth.state === "signedIn") await this.loadSpaces();
     this.ready = true;
   }
@@ -181,6 +199,9 @@ class AppState {
     this.current = null;
     this.thread = null;
     this.selected = null;
+    this.presence = {};
+    this.profileOf = null;
+    this.statusPicker = false;
   }
 
   async loadSpaces() {

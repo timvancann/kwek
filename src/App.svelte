@@ -8,6 +8,7 @@
   import SearchOverlay from "$lib/components/SearchOverlay.svelte";
   import ImageViewer from "$lib/components/ImageViewer.svelte";
   import Agenda from "$lib/components/Agenda.svelte";
+  import ProfileCard from "$lib/components/ProfileCard.svelte";
   import Sidebar from "$lib/components/Sidebar.svelte";
   import ThreadPanel from "$lib/components/ThreadPanel.svelte";
   import { handleKey } from "$lib/keys";
@@ -59,6 +60,7 @@
   <SearchOverlay />
   <ImageViewer />
   <Agenda />
+  <ProfileCard />
   <Dialogs />
 {/if}
 

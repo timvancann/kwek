@@ -63,6 +63,10 @@
   // Controls inside a message are reachable with Tab only when it is the selected one.
   const inner = $derived(selected ? 0 : -1);
 
+  function openProfile(from: HTMLElement) {
+    if (m.sender.name) app.profileOf = { user: m.sender.name, from };
+  }
+
   function view(a: MessageView["attachments"][number], from: HTMLElement) {
     app.viewing = { message: m, index: Math.max(0, viewable(m).indexOf(a)), from };
   }
@@ -107,7 +111,10 @@
 >
   <div class="w-9 shrink-0">
     {#if !grouped}
-      <Avatar user={m.sender} size={36} class="mt-0.5" />
+      <!-- A mouse shortcut; the name beside it is the keyboard way (and `p`). -->
+      <button tabindex="-1" aria-hidden="true" class="block cursor-pointer rounded-md" onclick={(e) => openProfile(e.currentTarget)}>
+        <Avatar user={m.sender} size={36} class="mt-0.5" />
+      </button>
     {:else}
       <time
         datetime={new Date(m.createUs / 1000).toISOString()}
@@ -120,7 +127,12 @@
   <div class="min-w-0 flex-1">
     {#if !grouped}
       <div class="flex items-baseline gap-2">
-        <span id="{uid}-who" class="text-[15px] font-semibold">{m.sender.displayName}</span>
+        <button
+          tabindex={inner}
+          class="rounded-sm text-[15px] font-semibold hover:underline hover:decoration-border hover:underline-offset-2"
+          aria-label="{m.sender.displayName}, show profile"
+          onclick={(e) => openProfile(e.currentTarget)}><span id="{uid}-who">{m.sender.displayName}</span></button
+        >
         <time datetime={new Date(m.createUs / 1000).toISOString()} class="text-[12px] text-muted-foreground" title={stamp(m.createUs)}
           ><span aria-hidden="true">{clock(m.createUs)}</span><span id="{uid}-when" class="sr-only">{stamp(m.createUs)}</span></time
         >

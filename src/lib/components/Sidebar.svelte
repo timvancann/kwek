@@ -10,6 +10,8 @@
   import { tick } from "svelte";
   import Avatar from "./Avatar.svelte";
   import SyncIndicator from "./SyncIndicator.svelte";
+  import StatusPicker from "./StatusPicker.svelte";
+  import { presenceWords, stateWords } from "$lib/presence";
   import Hash from "@lucide/svelte/icons/hash";
   import UsersRound from "@lucide/svelte/icons/users-round";
   import BellOff from "@lucide/svelte/icons/bell-off";
@@ -20,6 +22,8 @@
   import EyeOff from "@lucide/svelte/icons/eye-off";
 
   let nav: HTMLElement | undefined = $state();
+  /** You, at the bottom: the status picker opens from here. */
+  let meRow: HTMLElement | undefined = $state();
 
   // ------------------------------------------------------------- next meeting
 
@@ -275,13 +279,23 @@
                   )}
                 >
                   {#if s.kind === "dm"}
-                    <Avatar user={{ displayName: s.displayName, avatarUrl: s.avatarUrl }} size={20} />
+                    <Avatar
+                      user={{ displayName: s.displayName, avatarUrl: s.avatarUrl }}
+                      size={20}
+                      presence={s.peer ? (app.presence[s.peer]?.state ?? null) : undefined}
+                      ring={active ? "var(--sidebar-active)" : "var(--sidebar)"}
+                    />
                   {:else if s.kind === "group"}
                     <UsersRound class="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
                   {:else}
                     <Hash class="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
                   {/if}
                   <span class="min-w-0 flex-1 truncate">{s.displayName}</span>
+                  {#if s.peer}
+                    {@const p = app.presence[s.peer]}
+                    {#if p?.custom?.emoji}<span class="shrink-0 text-[13px]" title={p.custom.text} aria-hidden="true">{p.custom.emoji}</span>{/if}
+                    {#if presenceWords(p)}<span class="sr-only">, {presenceWords(p)}{p?.custom ? `, ${p.custom.text}` : ""}</span>{/if}
+                  {/if}
                   {#if s.muted}
                     <BellOff class="size-3.5 shrink-0" aria-hidden="true" />
                     <span class="sr-only">, muted</span>
@@ -391,6 +405,33 @@
         <X class="size-3.5" aria-hidden="true" />
       </button>
     </div>
+  {/if}
+
+  {#if me && app.ownPresence.access !== "off"}
+    {@const own = app.ownPresence}
+    <button
+      bind:this={meRow}
+      class={cn(
+        "mx-2 mb-1 flex items-center gap-2.5 rounded-md px-2 py-1.5 text-left hover:bg-sidebar-hover",
+        app.statusPicker && "bg-sidebar-hover",
+      )}
+      aria-haspopup="dialog"
+      aria-expanded={app.statusPicker}
+      aria-label="Your status: {own.state ? stateWords(own.state, own.dndUntilUs) : 'unknown'}{own.custom ? `, ${own.custom.text}` : ''}. Change"
+      onclick={() => (app.statusPicker = !app.statusPicker)}
+    >
+      <Avatar user={{ displayName: me.name ?? me.email ?? "You", avatarUrl: null }} size={24} presence={own.state} ring="var(--sidebar)" />
+      <span class="min-w-0 flex-1">
+        <span class="block truncate text-[13px] font-semibold">{me.name ?? me.email ?? "You"}</span>
+        <span class="block truncate text-[12px] text-muted-foreground">
+          {#if own.access === "needsPermission"}Set a status
+          {:else if own.custom}{own.custom.emoji} {own.custom.text}
+          {:else if own.state}{stateWords(own.state, own.dndUntilUs)}
+          {:else}Set a status{/if}
+        </span>
+      </span>
+    </button>
+    <StatusPicker anchor={meRow} />
   {/if}
 
   <div class="flex items-center gap-1 border-t border-border px-2 py-1.5">

@@ -2,7 +2,9 @@
   import { api } from "$lib/api";
   import { app } from "$lib/state.svelte";
   import { cn } from "$lib/utils";
+  import { presenceWords } from "$lib/presence";
   import Composer from "./Composer.svelte";
+  import PresenceDot from "./PresenceDot.svelte";
   import MessageList from "./MessageList.svelte";
   import Star from "@lucide/svelte/icons/star";
   import BellOff from "@lucide/svelte/icons/bell-off";
@@ -19,7 +21,28 @@
 {#if s}
   <section class="flex min-w-0 flex-1 flex-col" aria-label={title}>
     <header data-tauri-drag-region class="flex h-14 shrink-0 items-center gap-2.5 border-b border-border pr-4 pl-6">
-      <h1 data-tauri-drag-region class="min-w-0 truncate font-display text-[17px] font-semibold">{title}</h1>
+      {#if s.kind === "dm" && s.peer}
+        {@const p = app.presence[s.peer]}
+        <div class="min-w-0">
+          <h1 class="m-0 min-w-0 truncate font-display text-[17px] leading-tight font-semibold">
+            <button
+              class="rounded-sm hover:underline hover:decoration-border hover:underline-offset-2"
+              aria-label="{title}, show profile"
+              onclick={(e) => (app.profileOf = { user: s.peer!, from: e.currentTarget })}>{title}</button
+            >
+          </h1>
+          {#if presenceWords(p) || p?.custom}
+            <p data-tauri-drag-region class="m-0 flex min-w-0 items-center gap-1.5 truncate text-[12px] text-muted-foreground">
+              <PresenceDot state={p?.state} size={8} ring="transparent" />
+              <span class="truncate"
+                >{[presenceWords(p), p?.custom ? `${p.custom.emoji} ${p.custom.text}`.trim() : null].filter(Boolean).join(", ")}</span
+              >
+            </p>
+          {/if}
+        </div>
+      {:else}
+        <h1 data-tauri-drag-region class="min-w-0 truncate font-display text-[17px] font-semibold">{title}</h1>
+      {/if}
       {#if s.kind !== "dm" && s.memberCount}
         <span class="flex items-center gap-1 text-[12px] text-muted-foreground" title="{s.memberCount} members">
           <Users class="size-3.5" aria-hidden="true" />

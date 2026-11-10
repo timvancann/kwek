@@ -7,17 +7,46 @@ import type { CalendarView } from "./bindings/CalendarView";
 import type { GoogleSetupView } from "./bindings/GoogleSetupView";
 import type { MeetingView } from "./bindings/MeetingView";
 import type { MessageView } from "./bindings/MessageView";
+import type { OwnPresenceView } from "./bindings/OwnPresenceView";
+import type { PresenceView } from "./bindings/PresenceView";
+import type { ProfileView } from "./bindings/ProfileView";
 import type { SearchResult } from "./bindings/SearchResult";
 import type { SpaceSummary } from "./bindings/SpaceSummary";
 import type { SyncStatus } from "./bindings/SyncStatus";
 import type { UserRef } from "./bindings/UserRef";
 
-export type { AuthState, CalendarView, GoogleSetupView, MeetingView, MessageView, SearchResult, SpaceSummary, SyncStatus, UserRef };
+export type {
+  AuthState,
+  CalendarView,
+  GoogleSetupView,
+  MeetingView,
+  MessageView,
+  OwnPresenceView,
+  PresenceView,
+  ProfileView,
+  SearchResult,
+  SpaceSummary,
+  SyncStatus,
+  UserRef,
+};
+
+/** A custom status to set; Google needs both an emoji and text. */
+export type NewCustom = { emoji: string; text: string; ttlSecs: number | null };
+/** The availability picked in the status picker. */
+export type Choice = { kind: "automatic" } | { kind: "away" } | { kind: "dnd"; untilUs: number };
 
 export const api = {
   calendar: () => invoke<CalendarView>("calendar"),
   /** Signs in again in the browser to grant calendar access. */
   connectCalendar: () => invoke<void>("connect_calendar"),
+  /** Signs in again for what the sign-in lacks (status, free/busy); same as for calendar. */
+  grantAccess: () => invoke<void>("connect_calendar"),
+  presence: () => invoke<PresenceView[]>("presence"),
+  ownPresence: () => invoke<OwnPresenceView>("own_presence"),
+  /** `custom: null` clears the custom status. */
+  setStatus: (custom: NewCustom | null, choice: Choice) => invoke<OwnPresenceView>("set_status", { custom, choice }),
+  /** `endOfDayUs`: local midnight, so "busy until" stops at today. */
+  profile: (user: string, endOfDayUs: number) => invoke<ProfileView>("profile", { user, endOfDayUs }),
   googleSetup: () => invoke<GoogleSetupView | null>("google_setup"),
   setGoogleSetup: (json: string) => invoke<GoogleSetupView>("set_google_setup", { json }),
   authStatus: () => invoke<AuthState>("auth_status"),

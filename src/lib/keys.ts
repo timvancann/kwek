@@ -144,7 +144,17 @@ export const bindings: Binding[] = [
   },
   { keys: "+", label: "React", group: "Messages", run: () => withSelected((m) => (app.reactTo = m)) },
   { keys: "y", label: "Copy link to the message", group: "Messages", run: () => withSelected((m) => void app.copyLink(m)) },
+  { keys: "p", label: "Show the sender's profile", group: "Messages", run: () => withSelected(showProfile) },
 ];
+
+/** The sender's profile card, anchored to the message. A thread's first message is in both
+ * lists; the thread panel comes later in the page. */
+function showProfile(m: MessageView) {
+  const found = [...document.querySelectorAll<HTMLElement>(`[data-message="${CSS.escape(m.name)}"]`)];
+  const inThread = app.zone === "thread" || app.zone === "threadComposer";
+  const el = inThread ? found.at(-1) : found[0];
+  if (el && m.sender.name) app.profileOf = { user: m.sender.name, from: el };
+}
 
 function escape() {
   if (app.zone === "thread" || app.zone === "threadComposer") {

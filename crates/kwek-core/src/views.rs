@@ -29,6 +29,8 @@ pub struct SpaceSummary {
     pub name: String,
     /// `space`, `dm` or `group`.
     pub kind: String,
+    /// A DM's other person (`users/{id}`): their presence and profile card.
+    pub peer: Option<String>,
     pub display_name: String,
     pub avatar_url: Option<String>,
     pub unread: u32,
@@ -432,6 +434,7 @@ impl Builder<'_> {
         SpaceSummary {
             name: s.name.clone(),
             kind: kind.into(),
+            peer: if kind == "dm" { s.dm_peer.clone() } else { None },
             display_name,
             avatar_url,
             unread: if s.muted { 0 } else { s.unread.max(0) as u32 },
