@@ -77,6 +77,9 @@ pub trait Sink: Send + Sync {
     fn badge(&self, count: u32);
     /// The calendar's meetings or state changed.
     fn calendar(&self, _view: views::CalendarView) {}
+    /// Colleagues whose presence changed; an empty list means forget them all.
+    fn presence(&self, _changed: Vec<views::PresenceView>) {}
+    fn own_presence(&self, _view: views::OwnPresenceView) {}
 }
 
 #[derive(Default)]
@@ -2020,6 +2023,37 @@ impl Engine {
 
     pub fn message_view(&self, name: &str) -> Result<Option<MessageView>> {
         Ok(self.message_views_by_name(&[name.to_owned()])?.into_iter().next())
+    }
+}
+
+impl crate::presence::Roster for Engine {
+    fn me(&self) -> Option<String> {
+        let me = Engine::me(self);
+        (!me.is_empty()).then_some(me)
+    }
+
+    fn device_id(&self) -> Option<String> {
+        self.db.with(|c| kv_get(c, "device_id")).ok().flatten()
+    }
+
+    fn knows(&self, user: &str) -> bool {
+        self.db
+            .with(|c| {
+                Ok(c.query_row("SELECT 1 FROM user WHERE name = ?1", [user], |_| Ok(()))
+                    .optional()?
+                    .is_some())
+            })
+            .unwrap_or(false)
+    }
+
+    fn get(&self, key: &str) -> Option<String> {
+        self.db.with(|c| kv_get(c, key)).ok().flatten()
+    }
+
+    fn set(&self, key: &str, value: &str) {
+        if let Err(e) = self.db.with(|c| kv_set(c, key, value)) {
+            tracing::warn!("could not keep {key}: {e}");
+        }
     }
 }
 

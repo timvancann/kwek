@@ -134,6 +134,24 @@ pub struct PresenceView {
     pub custom: Option<CustomStatusView>,
 }
 
+/// Your own status, for the bottom of the sidebar and the status picker.
+#[derive(Debug, Clone, Serialize, TS, PartialEq)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct OwnPresenceView {
+    /// `ok`, `off` (signed out) or `needsPermission` (sign in again to allow it).
+    pub access: String,
+    /// `active`, `idle`, `away` or `dnd`, as Google has it; None until first read.
+    pub state: Option<String>,
+    /// You set away yourself; kwek leaves it until you pick Automatic.
+    pub manual_away: bool,
+    #[ts(type = "number | null")]
+    pub dnd_until_us: Option<Micros>,
+    pub custom: Option<CustomStatusView>,
+    /// Colleagues' dots work: the presence topic exists and kwek can use it.
+    pub team: bool,
+}
+
 #[derive(Debug, Clone, Serialize, TS, PartialEq)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
