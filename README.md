@@ -17,6 +17,10 @@ A fast, keyboard-first Google Chat client for macOS. *Kwek* is Dutch for roughly
 - Notifications for DMs and mentions, with sound; a quiet pop-up while kwek is in front.
 - Someone calls you, or a meeting is about to start: a notification with Join, which opens
   Meet in your browser. The next meeting sits in the sidebar; `⌘J` joins it.
+- Set your status from the sidebar: an emoji and a line of text, away, do not disturb. While
+  you're at your computer kwek keeps you shown as active, in Google Chat everywhere.
+- See who's around: colleagues who use kwek get a dot and their status. Click a name (or
+  press `p`) for their profile: status, role, when they're free today, the spaces you share.
 
 **Find**
 
