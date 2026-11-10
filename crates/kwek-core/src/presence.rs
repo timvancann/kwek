@@ -689,17 +689,17 @@ impl Presence {
         team == Some(true)
     }
 
-    /// Messages from the topic.
+    /// Messages from the topic. Checked and parsed once each, outside the lock (`accept`
+    /// refuses oversized ones before parsing); only the ordering needs what's held.
     pub fn receive<'a>(&self, batch: impl Iterator<Item = &'a [u8]>, now: Micros) {
         let Some(me) = self.roster.me() else { return };
+        let fresh: Vec<Held> = batch
+            .filter_map(|data| accept(data, |u| self.roster.knows(u), &me, now, None))
+            .collect();
         {
             let mut i = self.inner.lock().unwrap();
-            for data in batch {
-                let user = serde_json::from_slice::<PresenceMsg>(data)
-                    .map(|m| m.user)
-                    .unwrap_or_default();
-                let held = i.held.get(&user);
-                if let Some(h) = accept(data, |u| self.roster.knows(u), &me, now, held) {
+            for h in fresh {
+                if i.held.get(&h.user).is_none_or(|old| h.sent > old.sent) {
                     i.held.insert(h.user.clone(), h);
                 }
             }
@@ -1287,9 +1287,15 @@ mod tests {
         let sam = msg(SAM, "AWAY", NOW);
         let stranger = msg("users/stranger", "ACTIVE", NOW);
         w.p.receive([sam.as_slice(), stranger.as_slice()].into_iter(), NOW);
-        let shown = w.sink.presence.lock().unwrap();
-        assert_eq!(shown.len(), 1);
-        assert_eq!((shown[0].user.as_str(), shown[0].state.as_deref()), (SAM, Some("away")));
+        {
+            let shown = w.sink.presence.lock().unwrap();
+            assert_eq!(shown.len(), 1);
+            assert_eq!((shown[0].user.as_str(), shown[0].state.as_deref()), (SAM, Some("away")));
+        }
+        // An older message arriving late doesn't undo the newer one.
+        let late = msg(SAM, "ACTIVE", NOW - SECOND);
+        w.p.receive([late.as_slice()].into_iter(), NOW);
+        assert_eq!(w.p.all()[0].state.as_deref(), Some("away"));
     }
 
     #[tokio::test]
