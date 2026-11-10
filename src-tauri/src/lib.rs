@@ -2,6 +2,7 @@
 //! the engine pushes changes back through [`TauriSink`] as events, after each DB commit.
 
 mod commands;
+mod idle;
 mod notify;
 
 use std::collections::HashMap;
@@ -16,6 +17,7 @@ use kwek_core::db::Db;
 use kwek_core::events::EventsClient;
 use kwek_core::google::Google;
 use kwek_core::people::HttpPeople;
+use kwek_core::presence::{HttpAvailability, HttpPresenceBus, Presence};
 use kwek_core::search::embed::{E5, Embedder};
 use kwek_core::sync::{Engine, Notification, Outgoing, Sink};
 use kwek_core::views::{AuthState, MessageView, SpaceSummary, SyncStatus};
@@ -26,6 +28,7 @@ use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 pub struct AppState {
     pub engine: Arc<Engine>,
     pub agenda: Arc<Agenda>,
+    pub presence: Arc<Presence>,
     pub media_dir: PathBuf,
     pub data_dir: PathBuf,
     pub setup: SharedSetup,
@@ -74,6 +77,12 @@ impl Sink for TauriSink {
     }
     fn calendar(&self, view: kwek_core::views::CalendarView) {
         let _ = self.app.emit("calendar:changed", view);
+    }
+    fn presence(&self, changed: Vec<kwek_core::views::PresenceView>) {
+        let _ = self.app.emit("presence:changed", changed);
+    }
+    fn own_presence(&self, view: kwek_core::views::OwnPresenceView) {
+        let _ = self.app.emit("presence:own", view);
     }
     fn badge(&self, count: u32) {
         if let Some(w) = self.app.get_webview_window("main") {
@@ -243,20 +252,31 @@ pub fn run() {
                 db,
                 Arc::new(HttpChat::new(g.clone())),
                 Arc::new(HttpPeople::new(g.clone())),
-                Some(EventsClient::new(g, setup.clone())),
+                Some(EventsClient::new(g.clone(), setup.clone())),
                 Some(tokens),
-                sink,
+                sink.clone(),
                 Some(media_dir.clone()),
                 Some(embedder),
+            );
+            // Presence: also its own loops, and nothing it does can hold up chat.
+            let presence = Presence::new(
+                Arc::new(HttpAvailability::new(g.clone())),
+                Arc::new(HttpPresenceBus::new(g, setup.clone())),
+                Arc::new(idle::SystemIdle),
+                engine.clone(),
+                sink,
             );
             sweep_outbox(&data_dir.join("outbox"), &engine);
             tauri::async_runtime::spawn(engine.clone().run());
             tauri::async_runtime::spawn(engine.clone().backfill());
             tauri::async_runtime::spawn(engine.clone().index());
             tauri::async_runtime::spawn(agenda.clone().run());
+            tauri::async_runtime::spawn(presence.clone().run());
+            tauri::async_runtime::spawn(presence.clone().listen());
             app.manage(AppState {
                 engine,
                 agenda,
+                presence,
                 media_dir,
                 data_dir,
                 setup,
@@ -283,6 +303,9 @@ pub fn run() {
             commands::auth_status,
             commands::calendar,
             commands::connect_calendar,
+            commands::presence,
+            commands::own_presence,
+            commands::set_status,
             commands::stage_attachment,
             commands::unstage_attachment,
             commands::google_setup,

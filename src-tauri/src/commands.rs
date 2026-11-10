@@ -5,9 +5,11 @@ use std::sync::PoisonError;
 
 use kwek_core::Error;
 use kwek_core::config::GoogleSetup;
+use kwek_core::presence::{Choice, NewCustom};
 use kwek_core::sync::{Engine, Outgoing};
 use kwek_core::views::{
-    AuthState, CalendarView, GoogleSetupView, MessageView, SearchResult, SpaceSummary, SyncStatus, UserRef,
+    AuthState, CalendarView, GoogleSetupView, MessageView, OwnPresenceView, PresenceView, SearchResult, SpaceSummary,
+    SyncStatus, UserRef,
 };
 use tauri::{AppHandle, State};
 use tauri_plugin_opener::OpenerExt;
@@ -104,11 +106,14 @@ pub async fn login(app: AppHandle, state: State<'_, AppState>) -> Res<()> {
         .await
         .map_err(msg)?;
     state.agenda.poke();
+    state.presence.poke();
     Ok(())
 }
 
 #[tauri::command]
 pub async fn logout(state: State<'_, AppState>) -> Res<()> {
+    // While the sign-in still works: the device's presence subscription goes too.
+    state.presence.leave().await;
     state.engine.logout().await.map_err(msg)?;
     state.agenda.poke();
     Ok(())
@@ -119,7 +124,8 @@ pub fn calendar(state: State<'_, AppState>) -> CalendarView {
     state.agenda.view()
 }
 
-/// Signs in again to grant calendar access; the chat session carries on meanwhile.
+/// Signs in again to grant what the sign-in lacks (calendar, status, free/busy); the chat
+/// session carries on meanwhile.
 #[tauri::command]
 pub async fn connect_calendar(app: AppHandle, state: State<'_, AppState>) -> Res<()> {
     state
@@ -132,7 +138,31 @@ pub async fn connect_calendar(app: AppHandle, state: State<'_, AppState>) -> Res
         .await
         .map_err(msg)?;
     state.agenda.poke();
+    state.presence.poke();
     Ok(())
+}
+
+/// Colleagues' presence as last heard.
+#[tauri::command]
+pub fn presence(state: State<'_, AppState>) -> Vec<PresenceView> {
+    state.presence.all()
+}
+
+#[tauri::command]
+pub fn own_presence(state: State<'_, AppState>) -> OwnPresenceView {
+    state.presence.own()
+}
+
+/// Your status from the picker: the custom status (None clears it) and availability.
+#[tauri::command]
+pub async fn set_status(state: State<'_, AppState>, custom: Option<NewCustom>, choice: Choice) -> Res<OwnPresenceView> {
+    if let Some(c) = &custom
+        && (c.text.trim().is_empty() || c.text.chars().count() > 64)
+    {
+        return Err("A status needs some text, up to 64 characters.".into());
+    }
+    state.presence.set_status(custom, choice).await.map_err(msg)?;
+    Ok(state.presence.own())
 }
 
 #[tauri::command]
