@@ -7,3 +7,10 @@ dist/
 src-tauri/gen/
 .playwright-mcp/
 models/*/
+
+# Specs, plans and design notes are private: only the docs the README links to are public.
+kwek-spec.md
+docs/*
+!docs/setup.md
+!docs/development.md
+!docs/images/

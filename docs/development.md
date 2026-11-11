@@ -10,8 +10,6 @@ Unsigned, every build is a different app to the Keychain, so after each rebuild 
 
 Without anything extra, kwek asks for the user's client file on first start and keeps its details in the data folder (`google-client.json`). With your client file saved as `secrets/oauth-client.json` (gitignored), the build bakes it in instead and skips that step, which suits development. `KWEK_OAUTH_CLIENT_ID`, `KWEK_OAUTH_CLIENT_SECRET`, `KWEK_GCP_PROJECT` and `KWEK_PUBSUB_TOPIC` (default `chat-events`) override the file. A client file given in the app wins over the baked-in one.
 
-Releases: [releasing.md](releasing.md).
-
 Related search uses [multilingual-e5-small](https://huggingface.co/intfloat/multilingual-e5-small) (int8, about 135 MB), bundled with the app and run on-device with [fastembed](https://github.com/Anush008/fastembed-rs). `just model` fetches it into `models/` (pinned revision, checksummed); `just run` and `just bundle` do that for you.
 
 ## Commands
@@ -29,5 +27,5 @@ cargo run -p kwek-core --bin spike -- <command> # API spike / smoke test; see sr
 
 ## Where things are
 
-- Design record: `kwek-spec.md` (behaviour), `docs/plan.md` (order and decisions), `docs/api-findings.md` (what the APIs really do).
+- Design notes (`kwek-spec.md`, `docs/plan.md`, `docs/api-findings.md`, `docs/releasing.md`, `docs/superpowers/`) are kept out of the repo: only `setup.md`, this file and `docs/images/` are tracked.
 - Data: `~/Library/Application Support/nl.timvancann.kwek/` (SQLite cache, media cache). Logs: `~/Library/Logs/nl.timvancann.kwek/`. Message bodies and tokens are never logged at info level.
