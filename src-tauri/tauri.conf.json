@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "kwek",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "identifier": "nl.timvancann.kwek",
   "build": {
     "beforeDevCommand": "pnpm dev",
@@ -46,6 +46,12 @@
     },
     "macOS": {
       "minimumSystemVersion": "13.0"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDU0QzUwQzgxMUQ5NDJEQUQKUldTdExaUWRnUXpGVkZVVGd5MTRtVy9pYkFRME1KVmc3a3pnZCtNVy9TM3hIZEVyWnhPWk51NysK",
+      "endpoints": ["https://github.com/timvancann/kwek/releases/latest/download/latest.json"]
     }
   }
 }

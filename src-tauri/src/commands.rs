@@ -460,6 +460,15 @@ pub fn open_url(app: AppHandle, url: String) -> Res<()> {
     app.opener().open_url(url, None::<&str>).map_err(|e| e.to_string())
 }
 
+/// Installs the update the last check found and restarts kwek; only returns on failure.
+#[tauri::command]
+pub async fn install_update(app: AppHandle) -> Res<()> {
+    if !crate::update::ENABLED {
+        return Err("Builds from source don't update themselves.".into());
+    }
+    crate::update::install(&app).await
+}
+
 /// Saves an attachment to ~/Downloads and opens it.
 #[tauri::command]
 pub async fn download_attachment(

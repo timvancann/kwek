@@ -15,6 +15,7 @@ import {
   type PresenceView,
   type SpaceSummary,
   type SyncStatus,
+  type UpdateChecked,
   type UpsertPayload,
 } from "./api";
 import type { Block } from "./bindings/Block";
@@ -178,6 +179,7 @@ class AppState {
         for (const p of changed) this.presence[p.user] = p;
       }),
       on<OwnPresenceView>("presence:own", (p) => (this.ownPresence = p)),
+      on<UpdateChecked>("update:checked", (u) => this.onUpdate(u)),
     ]);
     window.addEventListener("focus", () => {
       this.windowFocused = true;
@@ -191,6 +193,24 @@ class AppState {
     for (const p of await api.presence().catch(() => [])) this.presence[p.user] = p;
     if (this.auth.state === "signedIn") await this.loadSpaces();
     this.ready = true;
+  }
+
+  private onUpdate(u: UpdateChecked) {
+    if (u.kind === "latest") toast(`kwek ${u.version} is the latest version.`);
+    else if (u.kind === "failed") toast.error("Couldn't check for updates. Try again later.");
+    else
+      toast(`kwek ${u.version} is available`, {
+        id: "update",
+        description: "kwek restarts to install it.",
+        duration: Infinity,
+        action: {
+          label: "Update",
+          onClick: () => {
+            toast.loading(`Installing kwek ${u.version}…`, { id: "update", duration: Infinity });
+            api.installUpdate().catch((e) => toast.error(errorText(e), { id: "update", duration: 8000 }));
+          },
+        },
+      });
   }
 
   private reset() {

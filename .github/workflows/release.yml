@@ -4,8 +4,9 @@ name: Release
 # this builds kwek.app for Apple silicon and publishes it as a GitHub release. (Not Intel:
 # ONNX Runtime, behind related search, has no prebuilt library for Intel Macs.) The build carries no Google client: each user gives kwek their own on first
 # launch (docs/setup.md). With the signing secrets set (docs/releasing.md) the app is
-# signed and notarized, so it opens like any other; without them it is only ad-hoc signed
-# and macOS asks once before opening it.
+# signed: with a Developer ID it is also notarized and opens like any other; with the
+# self-signed "kwek release" certificate, or none, macOS asks once before opening it.
+# With the updater key set, installed copies update to it (src-tauri/src/update.rs).
 
 on:
   push:
@@ -54,6 +55,9 @@ jobs:
       - run: cargo test -p kwek-core
 
       - name: Build for Apple silicon
+        env:
+          # Check for Updates and the update check at start (src-tauri/src/update.rs).
+          KWEK_UPDATES: "1"
         run: pnpm tauri build --target aarch64-apple-darwin
 
       - name: Sign and notarize
@@ -68,7 +72,7 @@ jobs:
           app=target/aarch64-apple-darwin/release/bundle/macos/kwek.app
           echo "APP=$app" >> "$GITHUB_ENV"
           if [ -z "$CERTIFICATE" ]; then
-            echo "::warning::No signing secrets: the release is ad-hoc signed only. See docs/releasing.md."
+            echo "::warning::No signing secrets: the release is ad-hoc signed only, so after each update macOS asks for the password to kwek's saved sign-in. See docs/releasing.md."
             codesign --force --sign - "$app"
             codesign --verify --strict --verbose=2 "$app"
             echo "SIGNED=no" >> "$GITHUB_ENV"
@@ -82,14 +86,25 @@ jobs:
           security unlock-keychain -p "$keychain_password" "$keychain"
           security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" \
             -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
-          # Apple's Developer ID intermediate, so the chain is whole on a fresh runner.
-          curl -fsSL -o "$RUNNER_TEMP/DeveloperIDG2CA.cer" \
-            https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer
-          security import "$RUNNER_TEMP/DeveloperIDG2CA.cer" -k "$keychain"
           security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain"
           # Ours first, then the ones already there (one word each, so unquoted).
           # shellcheck disable=SC2046
           security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+
+          if [ -z "$APPLE_ID" ]; then
+            # The self-signed "kwek release" certificate (tools/make-release-cert.sh): not
+            # notarized, but the same signer every release, so the Keychain keeps trusting
+            # kwek across updates.
+            codesign --force --sign "$SIGNING_IDENTITY" "$app"
+            codesign --verify --strict --verbose=2 "$app"
+            echo "SIGNED=self" >> "$GITHUB_ENV"
+            exit 0
+          fi
+
+          # Apple's Developer ID intermediate, so the chain is whole on a fresh runner.
+          curl -fsSL -o "$RUNNER_TEMP/DeveloperIDG2CA.cer" \
+            https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer
+          security import "$RUNNER_TEMP/DeveloperIDG2CA.cer" -k "$keychain"
 
           codesign --force --options runtime --timestamp --sign "$SIGNING_IDENTITY" "$app"
           codesign --verify --strict --verbose=2 "$app"
@@ -100,11 +115,36 @@ jobs:
           xcrun stapler staple "$app"
           echo "SIGNED=yes" >> "$GITHUB_ENV"
 
+      # What installed copies update from: the signed app as kwek.app.tar.gz, its signature
+      # by the updater key (docs/releasing.md), and latest.json pointing at both. kwek reads
+      # latest.json from releases/latest, so the newest release is always the one offered.
+      - name: Update bundle
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          # Without it this release would become "latest" with no latest.json, and every
+          # installed copy's update check would fail until the next one.
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::No updater key (TAURI_SIGNING_PRIVATE_KEY). See docs/releasing.md."
+            exit 1
+          fi
+          COPYFILE_DISABLE=1 tar -czf kwek.app.tar.gz -C "$(dirname "$APP")" kwek.app
+          pnpm tauri signer sign "$PWD/kwek.app.tar.gz"
+          jq -n --arg version "$VERSION" \
+            --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg signature "$(cat kwek.app.tar.gz.sig)" \
+            --arg url "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/kwek.app.tar.gz" \
+            '{version: $version, pub_date: $date, platforms: {"darwin-aarch64": {signature: $signature, url: $url}}}' \
+            > latest.json
+
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          zip="kwek-$VERSION.zip"
+          # The same name every release, so releases/latest/download/kwek-macOS.zip (the
+          # README's download button) always gets the newest.
+          zip="kwek-macOS.zip"
           ditto -c -k --keepParent "$APP" "$zip"
           setup="kwek works with your own Google Cloud project: before the first launch, follow the setup guide (https://github.com/$GITHUB_REPOSITORY/blob/main/docs/setup.md) and keep the client file it ends with. kwek asks for it on first start."
           if [ "$SIGNED" = yes ]; then
@@ -112,6 +152,7 @@ jobs:
           else
             open_it="For Macs with Apple silicon, macOS 13 or later. Download $zip, unzip it and drag kwek into Applications. This build isn't notarized by Apple, so macOS blocks it the first time: open it once, then go to System Settings, Privacy & Security, and click Open Anyway. Or run \`xattr -dr com.apple.quarantine /Applications/kwek.app\` in Terminal."
           fi
-          printf '%s\n\n%s\n' "$open_it" "$setup" > "$RUNNER_TEMP/notes.md"
-          gh release create "$GITHUB_REF_NAME" "$zip" --title "kwek $VERSION" \
+          updates="From 0.3.0 on, kwek updates itself: it offers a new version when there is one, or choose Check for Updates in the kwek menu."
+          printf '%s\n\n%s\n\n%s\n' "$open_it" "$setup" "$updates" > "$RUNNER_TEMP/notes.md"
+          gh release create "$GITHUB_REF_NAME" "$zip" kwek.app.tar.gz latest.json --title "kwek $VERSION" \
             --notes-file "$RUNNER_TEMP/notes.md" --generate-notes

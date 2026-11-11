@@ -4,6 +4,7 @@
 mod commands;
 mod idle;
 mod notify;
+mod update;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -185,6 +186,11 @@ pub fn run() {
             let _ = w.set_focus();
         }
     }));
+    let builder = if update::ENABLED {
+        builder.plugin(update::plugin())
+    } else {
+        builder
+    };
     builder
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_opener::init())
@@ -283,6 +289,11 @@ pub fn run() {
                 staged: Mutex::new(HashMap::new()),
                 _log_guard: guard,
             });
+            if update::ENABLED {
+                app.manage(update::Updates::default());
+                update::install_menu(app.handle())?;
+                tauri::async_runtime::spawn(update::run(app.handle().clone()));
+            }
             tracing::info!("kwek started");
             #[cfg(debug_assertions)]
             if std::env::var_os("KWEK_DEVTOOLS").is_some()
@@ -335,6 +346,7 @@ pub fn run() {
             commands::set_open,
             commands::last_own_message,
             commands::open_url,
+            commands::install_update,
             commands::download_attachment,
         ])
         .run(tauri::generate_context!())

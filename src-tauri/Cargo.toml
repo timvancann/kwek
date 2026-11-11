@@ -27,3 +27,4 @@ tracing-subscriber.workspace = true
 tracing-appender = "0.2"
 url.workspace = true
 uuid.workspace = true
+tauri-plugin-updater = "2"

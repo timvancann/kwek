@@ -91,6 +91,8 @@ export const api = {
   lastOwnMessage: (space: string, thread: string | null) =>
     invoke<MessageView | null>("last_own_message", { space, thread }),
   openUrl: (url: string) => invoke<void>("open_url", { url }),
+  /** Restarts kwek on success, so it only ever resolves by rejecting. */
+  installUpdate: () => invoke<void>("install_update"),
   downloadAttachment: (resource: string, name: string) =>
     invoke<string>("download_attachment", { resource, name }),
 };
@@ -115,6 +117,12 @@ export interface InAppNotice extends NavPayload {
   /** A call or meeting to join (Meet, in the browser). */
   url?: string | null;
 }
+
+/** A release build's update check (src-tauri's update.rs). */
+export type UpdateChecked =
+  | { kind: "available"; version: string }
+  | { kind: "latest"; version: string }
+  | { kind: "failed" };
 
 export function on<T>(event: string, cb: (payload: T) => void): Promise<UnlistenFn> {
   return listen<T>(event, (e) => cb(e.payload));
