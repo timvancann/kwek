@@ -9,7 +9,9 @@ import {
   type CalendarView,
   type DeletePayload,
   type InAppNotice,
+  type Mark,
   type MessageView,
+  type ScheduledView,
   type NavPayload,
   type OwnPresenceView,
   type PresenceView,
@@ -20,6 +22,7 @@ import {
 } from "./api";
 import type { Block } from "./bindings/Block";
 import type { Inline } from "./bindings/Inline";
+import { upcoming } from "./when";
 
 export type Zone = "sidebar" | "messages" | "composer" | "thread" | "threadComposer";
 export type SpaceSort = "recent" | "az" | "custom";
@@ -44,7 +47,8 @@ function sortSpaces(xs: SpaceSummary[], sort: SpaceSort): SpaceSummary[] {
   }
   return xs;
 }
-export type Overlay = null | "switcher" | "search" | "keys" | "agenda";
+export type Overlay = null | "switcher" | "search" | "keys" | "agenda" | "activity";
+export type ActivityTab = "activity" | "saved" | "reminders" | "scheduled";
 
 const PAGE = 100;
 
@@ -111,6 +115,14 @@ class AppState {
   narrow = $state(false);
   /** How the Spaces section is sorted; remembered on this Mac. */
   spaceSort = $state<SpaceSort>(loadSpaceSort());
+  /** Asks that message's Remind me choices to open (the `m` key). */
+  remindFor = $state<{ name: string; where: "channel" | "thread" } | null>(null);
+  /** The Activity overlay's tab. */
+  activityTab = $state<ActivityTab>("activity");
+  /** Messages waiting to be sent later, soonest first. */
+  scheduled = $state<ScheduledView[]>([]);
+  /** Bumped when saved messages, reminders or scheduled messages change, so open lists reload. */
+  laterNonce = $state(0);
 
   currentSpace = $derived(this.spaces.find((s) => s.name === this.current) ?? null);
   currentMessages = $derived(this.current ? (this.messages[this.current] ?? []) : []);
@@ -180,6 +192,11 @@ class AppState {
       }),
       on<OwnPresenceView>("presence:own", (p) => (this.ownPresence = p)),
       on<UpdateChecked>("update:checked", (u) => this.onUpdate(u)),
+      on<Mark | null>("later:changed", (mark) => {
+        if (mark) this.onMark(mark);
+        else void this.loadScheduled();
+        this.laterNonce++;
+      }),
     ]);
     window.addEventListener("focus", () => {
       this.windowFocused = true;
@@ -192,7 +209,22 @@ class AppState {
     this.ownPresence = await api.ownPresence().catch(() => this.ownPresence);
     for (const p of await api.presence().catch(() => [])) this.presence[p.user] = p;
     if (this.auth.state === "signedIn") await this.loadSpaces();
+    await this.loadScheduled();
     this.ready = true;
+  }
+
+  async loadScheduled() {
+    this.scheduled = await api.scheduledMessages().catch(() => this.scheduled);
+  }
+
+  /** A message's saved or reminder state changed: patch it where it is shown. */
+  private onMark(mark: Mark) {
+    const patch = (list: MessageView[]) => {
+      const i = list.findIndex((m) => m.name === mark.message);
+      if (i >= 0) list[i] = { ...list[i], saved: mark.saved, remindAtUs: mark.remindAtUs };
+    };
+    for (const list of Object.values(this.messages)) patch(list);
+    if (this.thread) patch(this.thread.messages);
   }
 
   private onUpdate(u: UpdateChecked) {
@@ -222,6 +254,7 @@ class AppState {
     this.presence = {};
     this.profileOf = null;
     this.statusPicker = false;
+    this.scheduled = [];
   }
 
   async loadSpaces() {
@@ -479,6 +512,46 @@ class AppState {
     } catch {
       toast.error("Could not copy the link.");
     }
+  }
+
+  async toggleSaved(m: MessageView) {
+    try {
+      await api.setSaved(m.name, !m.saved);
+      this.say(m.saved ? "Removed from saved." : "Saved. Find it under Activity, Saved.");
+    } catch (e) {
+      toast.error(errorText(e));
+    }
+  }
+
+  /** `atUs: null` clears it. */
+  async remind(m: MessageView, atUs: number | null) {
+    try {
+      await api.setReminder(m.name, atUs);
+      if (atUs === null) toast("Reminder removed");
+      else toast.success(`kwek reminds you ${upcoming(atUs)}`);
+    } catch (e) {
+      toast.error(errorText(e));
+    }
+  }
+
+  async schedule(text: string, thread: string | null, attachments: string[], atUs: number) {
+    const space = thread ? this.thread?.space : this.current;
+    if (!space) throw new Error("No conversation is open.");
+    try {
+      await api.scheduleMessage(space, thread, text, attachments, atUs);
+      toast.success(`Scheduled for ${upcoming(atUs)}`, {
+        description: "kwek sends it then, if it's running; otherwise as soon as it starts again.",
+      });
+    } catch (e) {
+      toast.error(errorText(e));
+      throw e;
+    }
+  }
+
+  openActivity(tab: ActivityTab = "activity") {
+    this.viewing = null;
+    this.activityTab = tab;
+    this.overlay = "activity";
   }
 
   async toggleStar(space: SpaceSummary) {

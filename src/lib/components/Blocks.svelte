@@ -2,6 +2,7 @@
   import type { Block } from "$lib/bindings/Block";
   import Blocks from "./Blocks.svelte";
   import Inlines from "./Inlines.svelte";
+  import CodeBlock from "./CodeBlock.svelte";
 
   let { blocks, tabbable = true }: { blocks: Block[]; tabbable?: boolean } = $props();
 </script>
@@ -25,9 +26,7 @@
   {:else if b.kind === "quote"}
     <blockquote class="my-1.5 border-l-2 border-border pl-3 text-muted-foreground"><Blocks blocks={b.blocks} {tabbable} /></blockquote>
   {:else if b.kind === "code"}
-    <pre class="my-2 overflow-x-auto rounded-md border border-border bg-muted px-3.5 py-2.5 font-mono text-[13px] leading-relaxed"><code
-        >{b.text}</code
-      ></pre>
+    <CodeBlock text={b.text} />
   {:else if b.kind === "rule"}
     <hr class="my-3 border-border" />
   {/if}

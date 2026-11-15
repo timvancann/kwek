@@ -82,8 +82,9 @@
   --radius-sm: calc(var(--radius) - 2px);
   --radius-md: var(--radius);
   --radius-lg: calc(var(--radius) + 2px);
-  /* The system's own type (SF Pro, SF Mono on macOS): native, and nothing to ship. */
-  --font-sans: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  /* The system's own type (SF Pro, SF Mono on macOS): native, and nothing to ship. The emoji
+     fonts are named because WebView2 on Windows doesn't fall back to Segoe UI Emoji by itself. */
+  --font-sans: -apple-system, BlinkMacSystemFont, system-ui, "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif;
   --font-display: var(--font-sans);
   --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
 }

@@ -116,6 +116,55 @@ pub struct MessageView {
     pub web_url: Option<String>,
     /// Set when the message is a call (Chat posts a bare Meet link when one starts).
     pub call: Option<CallView>,
+    /// In the user's saved messages (kwek only).
+    pub saved: bool,
+    /// When kwek reminds the user about this message, if it will.
+    #[ts(type = "number | null")]
+    pub remind_at_us: Option<Micros>,
+}
+
+/// A message listed outside its conversation: Activity, Saved, Reminders.
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ListedMessage {
+    pub message: MessageView,
+    pub space_name: String,
+    /// `mention` or `reply` in Activity; `saved` or `reminder` otherwise.
+    pub why: String,
+    /// When it was saved, or when the reminder is due; the message time in Activity.
+    #[ts(type = "number")]
+    pub at_us: Micros,
+    /// Activity only: arrived after the conversation or thread was last read.
+    pub unread: bool,
+}
+
+/// A message's saved and reminder state changed.
+#[derive(Debug, Clone, Serialize, TS, PartialEq)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct Mark {
+    pub message: String,
+    pub saved: bool,
+    #[ts(type = "number | null")]
+    pub remind_at_us: Option<Micros>,
+}
+
+/// A message waiting to be sent later.
+#[derive(Debug, Clone, Serialize, TS, PartialEq)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ScheduledView {
+    #[ts(type = "number")]
+    pub id: i64,
+    pub space: String,
+    pub space_name: String,
+    pub thread: Option<String>,
+    pub text: String,
+    /// File names of the attachments.
+    pub files: Vec<String>,
+    #[ts(type = "number")]
+    pub at_us: Micros,
 }
 
 /// What a profile card shows about someone. Each part is None when it isn't known.
@@ -531,6 +580,8 @@ impl Builder<'_> {
             has_cards: m.cards.as_deref().is_some_and(|c| c != "[]"),
             web_url: message_web_url(space_uri, m),
             call,
+            saved: false,
+            remind_at_us: None,
         }
     }
 }
@@ -566,12 +617,20 @@ fn rich_link_blocks(annotations: Option<&str>) -> Vec<Block> {
     }
 }
 
+/// Where the webview reaches the `media` protocol. WebView2 (Windows) and Android serve
+/// custom protocols as `http://<scheme>.localhost`; a `media://` URL loads nothing there.
+const MEDIA_BASE: &str = if cfg!(any(windows, target_os = "android")) {
+    "http://media.localhost"
+} else {
+    "media://localhost"
+};
+
 /// Avatars are proxied through Rust (`media://localhost/avatar/...`) so the webview never
 /// talks to the network. Only Google's avatar host is allowed.
 pub fn avatar_media_url(url: &str) -> Option<String> {
     is_avatar_host(url).then(|| {
         format!(
-            "media://localhost/avatar/{}",
+            "{MEDIA_BASE}/avatar/{}",
             percent_encoding::utf8_percent_encode(url, percent_encoding::NON_ALPHANUMERIC)
         )
     })
@@ -587,7 +646,7 @@ pub fn is_avatar_host(url: &str) -> bool {
 
 pub fn media_url(resource: &str) -> String {
     format!(
-        "media://localhost/{}",
+        "{MEDIA_BASE}/{}",
         percent_encoding::utf8_percent_encode(resource, percent_encoding::NON_ALPHANUMERIC)
     )
 }

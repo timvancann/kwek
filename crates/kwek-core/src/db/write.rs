@@ -190,7 +190,8 @@ pub fn insert_pending(
     now: Micros,
 ) -> Result<String> {
     let name = format!("pending:{client_id}");
-    let formatted = text.to_owned();
+    // What Google would make of it, until its own formattedText arrives.
+    let formatted = crate::render::chat_to_markdown(text);
     c.execute(
         "INSERT INTO message (name, space, thread, is_reply, sender, create_us, update_us, text,
                               formatted_text, client_id, local_state, raw)
@@ -230,8 +231,8 @@ pub fn set_local_state(c: &Connection, name: &str, state: &str) -> Result<()> {
 
 pub fn set_text_local(c: &Connection, name: &str, text: &str) -> Result<()> {
     c.execute(
-        "UPDATE message SET text = ?2, formatted_text = ?2 WHERE name = ?1",
-        params![name, text],
+        "UPDATE message SET text = ?2, formatted_text = ?3 WHERE name = ?1",
+        params![name, text, crate::render::chat_to_markdown(text)],
     )?;
     Ok(())
 }

@@ -285,6 +285,7 @@ struct Rec {
     upserts: Mutex<Vec<(String, Vec<MessageView>)>>,
     deletes: Mutex<Vec<(String, Vec<String>)>>,
     notes: Mutex<Vec<Notification>>,
+    later: Mutex<Vec<Option<views::Mark>>>,
 }
 
 impl Sink for Rec {
@@ -301,6 +302,9 @@ impl Sink for Rec {
         self.notes.lock().unwrap().push(n);
     }
     fn badge(&self, _: u32) {}
+    fn later_changed(&self, mark: Option<views::Mark>) {
+        self.later.lock().unwrap().push(mark);
+    }
 }
 
 fn user(name: &str, display: Option<&str>) -> User {
@@ -1541,4 +1545,161 @@ async fn search_by_meaning_finds_other_words() {
         })
         .unwrap();
     assert_eq!(orphans, 0);
+}
+
+// ---------------------------------------------------------------- later (later.rs)
+
+const DEPLOY: &str = "spaces/team/messages/3";
+const HOUR: Micros = 60 * MINUTE;
+
+#[tokio::test]
+async fn saved_and_reminders_show_on_the_message_and_in_their_lists() {
+    let f = world();
+    let (e, rec) = engine(&f).await;
+    e.bootstrap().await.unwrap();
+    e.set_saved(DEPLOY, true).await.unwrap();
+    let at = ts::now() + HOUR;
+    e.set_reminder(DEPLOY, Some(at)).await.unwrap();
+
+    let v = e.message_view(DEPLOY).unwrap().unwrap();
+    assert!(v.saved);
+    assert_eq!(v.remind_at_us, Some(at));
+    let saved = e.saved().unwrap();
+    assert_eq!(saved.len(), 1);
+    assert_eq!(saved[0].space_name, "Team");
+    assert_eq!(e.reminders().unwrap()[0].at_us, at);
+    assert_eq!(
+        rec.later.lock().unwrap().last().cloned().flatten(),
+        Some(views::Mark {
+            message: DEPLOY.into(),
+            saved: true,
+            remind_at_us: Some(at),
+        })
+    );
+
+    e.set_saved(DEPLOY, false).await.unwrap();
+    e.set_reminder(DEPLOY, None).await.unwrap();
+    assert!(e.saved().unwrap().is_empty());
+    assert!(e.reminders().unwrap().is_empty());
+    assert!(!e.message_view(DEPLOY).unwrap().unwrap().saved);
+}
+
+#[tokio::test]
+async fn a_due_reminder_notifies_once() {
+    let f = world();
+    let (e, rec) = engine(&f).await;
+    e.bootstrap().await.unwrap();
+    rec.notes.lock().unwrap().clear();
+    e.set_reminder(DEPLOY, Some(ts::now() + HOUR)).await.unwrap();
+    e.later_pass().await.unwrap();
+    assert!(rec.notes.lock().unwrap().is_empty(), "not due yet");
+
+    e.set_reminder(DEPLOY, Some(ts::now() - 1)).await.unwrap();
+    e.later_pass().await.unwrap();
+    e.later_pass().await.unwrap();
+    let notes = rec.notes.lock().unwrap();
+    assert_eq!(notes.len(), 1);
+    assert_eq!(notes[0].title, "Reminder: Ada Lovelace");
+    assert_eq!(notes[0].body, "deploy is green");
+    assert_eq!(notes[0].message, DEPLOY);
+    assert!(e.reminders().unwrap().is_empty());
+    assert_eq!(e.message_view(DEPLOY).unwrap().unwrap().remind_at_us, None);
+}
+
+#[tokio::test]
+async fn a_scheduled_message_waits_then_sends() {
+    let f = world();
+    let (e, _) = engine(&f).await;
+    e.bootstrap().await.unwrap();
+    e.schedule("spaces/team", Some("spaces/team/threads/t1"), "later on", vec![], ts::now() + HOUR)
+        .await
+        .unwrap();
+    e.later_pass().await.unwrap();
+    assert!(f.0.lock().unwrap().created.is_empty());
+    let s = e.scheduled().unwrap();
+    assert_eq!(s.len(), 1);
+    assert_eq!((s[0].space_name.as_str(), s[0].text.as_str()), ("Team", "later on"));
+
+    e.send_scheduled_now(s[0].id).await.unwrap();
+    until(|| !f.0.lock().unwrap().created.is_empty()).await;
+    let created = f.0.lock().unwrap().created.clone();
+    assert_eq!(created.len(), 1);
+    assert_eq!(created[0].1, "later on");
+    assert_eq!(created[0].2.as_deref(), Some("spaces/team/threads/t1"));
+    assert!(e.scheduled().unwrap().is_empty());
+    assert!(e.send_scheduled_now(s[0].id).await.is_err(), "already sent");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn send_now_twice_at_once_sends_once() {
+    let f = world();
+    let (e, _) = engine(&f).await;
+    e.bootstrap().await.unwrap();
+    e.schedule("spaces/team", None, "only once", vec![], ts::now() + HOUR)
+        .await
+        .unwrap();
+    let id = e.scheduled().unwrap()[0].id;
+    let (a, b) = (e.clone(), e.clone());
+    let _ = tokio::join!(
+        tokio::spawn(async move { a.send_scheduled_now(id).await }),
+        tokio::spawn(async move { b.send_scheduled_now(id).await }),
+        e.later_pass(),
+    );
+    until(|| !f.0.lock().unwrap().created.is_empty()).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(f.0.lock().unwrap().created.len(), 1);
+}
+
+#[tokio::test]
+async fn a_scheduled_message_keeps_its_files_until_cancelled() {
+    let f = world();
+    let (e, _) = engine(&f).await;
+    e.bootstrap().await.unwrap();
+    let path = std::env::temp_dir().join(format!("kwek-later-{}", uuid::Uuid::new_v4()));
+    std::fs::write(&path, b"x").unwrap();
+    let file = Outgoing {
+        path: path.clone(),
+        name: "notes.pdf".into(),
+        content_type: "application/pdf".into(),
+    };
+    e.schedule("spaces/team", None, "", vec![file], ts::now() + HOUR)
+        .await
+        .unwrap();
+    assert_eq!(e.staged_in_use().unwrap(), vec![path.clone()]);
+    let s = e.scheduled().unwrap();
+    assert_eq!(s[0].files, vec!["notes.pdf".to_string()]);
+    e.cancel_scheduled(s[0].id).await.unwrap();
+    assert!(e.scheduled().unwrap().is_empty());
+    assert!(e.staged_in_use().unwrap().is_empty());
+    assert!(!path.exists(), "a cancelled message's files go");
+}
+
+#[tokio::test]
+async fn activity_lists_mentions_and_replies_in_my_threads() {
+    let f = world();
+    {
+        let mut w = f.0.lock().unwrap();
+        // A reply in t1, where I replied before; one in t3, where I never wrote.
+        w.messages.push(message("spaces/team", "5", "users/ada", "2024-01-01T13:00:00Z", "agreed", "t1", true));
+        w.messages.push(message("spaces/team", "6", "users/ada", "2024-01-01T13:05:00Z", "noise", "t3", true));
+        w.messages.push(message("spaces/dm", "7", "users/ada", "2024-01-01T13:10:00Z", "ping <users/me>", "t7", false));
+    }
+    let (e, _) = engine(&f).await;
+    e.bootstrap().await.unwrap();
+    for t in ["spaces/team/threads/t1", "spaces/team/threads/t3"] {
+        e.fetch_thread(t).await.unwrap();
+    }
+    let a = e.activity().unwrap();
+    let got: Vec<(&str, &str)> = a.iter().map(|x| (x.message.name.as_str(), x.why.as_str())).collect();
+    assert_eq!(
+        got,
+        vec![("spaces/dm/messages/7", "mention"), ("spaces/team/messages/5", "reply")]
+    );
+    // The DM was last read before the mention; the thread was never opened.
+    assert!(a.iter().all(|x| x.unread));
+    e.mark_thread_read("spaces/team/threads/t1", t("2024-01-01T14:00:00Z"))
+        .await
+        .unwrap();
+    let a = e.activity().unwrap();
+    assert!(!a.iter().find(|x| x.why == "reply").unwrap().unread);
 }

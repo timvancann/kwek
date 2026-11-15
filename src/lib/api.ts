@@ -3,8 +3,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { AuthState } from "./bindings/AuthState";
+import type { Block } from "./bindings/Block";
 import type { CalendarView } from "./bindings/CalendarView";
 import type { GoogleSetupView } from "./bindings/GoogleSetupView";
+import type { ListedMessage } from "./bindings/ListedMessage";
+import type { Mark } from "./bindings/Mark";
+import type { ScheduledView } from "./bindings/ScheduledView";
 import type { MeetingView } from "./bindings/MeetingView";
 import type { MessageView } from "./bindings/MessageView";
 import type { OwnPresenceView } from "./bindings/OwnPresenceView";
@@ -19,6 +23,9 @@ export type {
   AuthState,
   CalendarView,
   GoogleSetupView,
+  ListedMessage,
+  Mark,
+  ScheduledView,
   MeetingView,
   MessageView,
   OwnPresenceView,
@@ -68,6 +75,18 @@ export const api = {
       headers: { "x-name": encodeURIComponent(file.name), "x-type": file.type },
     }),
   unstageAttachment: (id: string) => invoke<void>("unstage_attachment", { id }),
+  /** Sends at `atUs` (kwek must be running then, or sends when it next starts). */
+  scheduleMessage: (space: string, thread: string | null, text: string, attachments: string[], atUs: number) =>
+    invoke<void>("schedule_message", { space, thread, text, attachments, atUs }),
+  scheduledMessages: () => invoke<ScheduledView[]>("scheduled_messages"),
+  cancelScheduled: (id: number) => invoke<void>("cancel_scheduled", { id }),
+  sendScheduledNow: (id: number) => invoke<void>("send_scheduled_now", { id }),
+  setSaved: (message: string, saved: boolean) => invoke<void>("set_saved", { message, saved }),
+  /** `atUs: null` clears the reminder. */
+  setReminder: (message: string, atUs: number | null) => invoke<void>("set_reminder", { message, atUs }),
+  listedMessages: (kind: "activity" | "saved" | "reminders") => invoke<ListedMessage[]>("listed_messages", { kind }),
+  /** The composer's text (Chat syntax) rendered as it will look once sent. */
+  previewMessage: (text: string) => invoke<Block[]>("preview_message", { text }),
   retrySend: (name: string) => invoke<void>("retry_send", { name }),
   discardFailed: (name: string) => invoke<void>("discard_failed", { name }),
   editMessage: (name: string, text: string) => invoke<void>("edit_message", { name, text }),

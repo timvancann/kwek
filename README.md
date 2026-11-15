@@ -26,7 +26,9 @@ for an organisation. kwek is the client I wanted instead.
 - Search finds conversations, not just single messages, and goes back through your whole
   history.
 - Vim keys: `j`/`k`, `⌘K` to jump, `⌘F` to search, `r` to reply, `?` for the rest.
-- Notifications, status, meeting reminders with a Join button, images and videos.
+- Notifications, status, meeting reminders with a Join button, files of any kind.
+- Save messages, get reminded about one, or write one now and send it later; an Activity
+  view (`⌘⇧A`) collects those plus your mentions and replies.
 - No server in between and no telemetry.
 
 ## Installing

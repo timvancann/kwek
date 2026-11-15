@@ -2,8 +2,8 @@
   import * as Dialog from "$lib/components/ui/dialog/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
   import { api, errorText } from "$lib/api";
-  import { EMOJI, QUICK } from "$lib/emoji";
-  import { bindings } from "$lib/keys";
+  import EmojiPicker from "./EmojiPicker.svelte";
+  import { bindings, writingKeys } from "$lib/keys";
   import { app } from "$lib/state.svelte";
   import { toast } from "svelte-sonner";
 
@@ -38,17 +38,12 @@
 
   // Reaction picker
   let reactOpen = $state(false);
-  let filter = $state("");
   $effect(() => {
     reactOpen = app.reactTo !== null;
-    if (reactOpen) filter = "";
   });
   $effect(() => {
     if (!reactOpen && app.reactTo) app.reactTo = null;
   });
-  const shown = $derived(
-    filter.trim() ? EMOJI.filter(([n]) => n.includes(filter.trim().toLowerCase())).map(([, e]) => e) : [...new Set(EMOJI.map(([, e]) => e))],
-  );
   const mine = $derived(new Set(app.reactTo?.reactions.filter((r) => r.mine).map((r) => r.emoji) ?? []));
   function pick(e: string) {
     const m = app.reactTo;
@@ -81,6 +76,13 @@
           {/each}
         </dl>
       {/each}
+      <h3 class="mt-3 mb-1 text-[12px] font-semibold text-muted-foreground">Writing</h3>
+      <dl class="m-0 grid grid-cols-[5.5rem_1fr] items-baseline gap-x-4 gap-y-1">
+        {#each writingKeys as b (b.keys)}
+          <dt><kbd class="inline-block min-w-7 rounded border border-input px-1.5 text-center font-sans text-[12px]">{b.keys}</kbd></dt>
+          <dd class="m-0">{b.label}</dd>
+        {/each}
+      </dl>
     </div>
   </Dialog.Content>
 </Dialog.Root>
@@ -119,51 +121,6 @@
       <Dialog.Title>React</Dialog.Title>
       <Dialog.Description class="sr-only">Pick an emoji to add or remove your reaction.</Dialog.Description>
     </Dialog.Header>
-    <input
-      bind:value={filter}
-      class="selectable h-8 rounded-md border border-input px-2 outline-none focus:border-accent focus:ring-2 focus:ring-accent/30"
-      placeholder="Find an emoji by name, Enter picks the first"
-      aria-label="Find an emoji by name"
-      onkeydown={(e) => {
-        if (e.key === "Enter" && shown[0]) {
-          e.preventDefault();
-          pick(shown[0]);
-        }
-      }}
-    />
-    {#if !filter.trim()}
-      <div class="flex gap-1" role="group" aria-label="Frequent">
-        {#each QUICK as e (e)}
-          <button class="emoji" class:mine={mine.has(e)} aria-pressed={mine.has(e)} onclick={() => pick(e)} aria-label="React with {e}">{e}</button>
-        {/each}
-      </div>
-    {/if}
-    <div class="grid max-h-48 grid-cols-8 gap-1 overflow-y-auto" role="group" aria-label={filter.trim() ? "Matching emoji" : "All emoji"}>
-      {#each shown as e (e)}
-        <button class="emoji" class:mine={mine.has(e)} aria-pressed={mine.has(e)} onclick={() => pick(e)} aria-label="React with {e}">{e}</button>
-      {/each}
-    </div>
+    <EmojiPicker verb="React with" marked={mine} onpick={pick} />
   </Dialog.Content>
 </Dialog.Root>
-
-<style>
-  .emoji {
-    width: 36px;
-    height: 36px;
-    border-radius: 6px;
-    font-size: 20px;
-    line-height: 36px;
-    text-align: center;
-  }
-  .emoji:hover {
-    background: var(--muted);
-  }
-  .emoji:focus-visible {
-    outline: 2px solid var(--ring);
-    outline-offset: -2px;
-  }
-  .emoji.mine {
-    background: var(--accent-soft);
-    box-shadow: inset 0 0 0 1px var(--accent);
-  }
-</style>

@@ -4,6 +4,7 @@
 mod commands;
 mod idle;
 mod notify;
+#[cfg(desktop)]
 mod update;
 
 use std::collections::HashMap;
@@ -19,7 +20,9 @@ use kwek_core::events::EventsClient;
 use kwek_core::google::Google;
 use kwek_core::people::HttpPeople;
 use kwek_core::presence::{HttpAvailability, HttpPresenceBus, Presence};
-use kwek_core::search::embed::{E5, Embedder};
+#[cfg(desktop)]
+use kwek_core::search::embed::E5;
+use kwek_core::search::embed::Embedder;
 use kwek_core::sync::{Engine, Notification, Outgoing, Sink};
 use kwek_core::views::{AuthState, MessageView, SpaceSummary, SyncStatus};
 use serde_json::json;
@@ -85,7 +88,14 @@ impl Sink for TauriSink {
     fn own_presence(&self, view: kwek_core::views::OwnPresenceView) {
         let _ = self.app.emit("presence:own", view);
     }
+    fn later_changed(&self, mark: Option<kwek_core::views::Mark>) {
+        let _ = self.app.emit("later:changed", mark);
+    }
     fn badge(&self, count: u32) {
+        // The Dock badge; phones have no window badge.
+        #[cfg(mobile)]
+        let _ = count;
+        #[cfg(desktop)]
         if let Some(w) = self.app.get_webview_window("main") {
             let _ = w.set_badge_count(if count > 0 { Some(count as i64) } else { None });
         }
@@ -178,7 +188,7 @@ pub fn run() {
     let builder = tauri::Builder::default();
     // Debug builds run next to the installed app (own data folder, see setup), so only
     // release builds are single-instance.
-    #[cfg(not(debug_assertions))]
+    #[cfg(all(desktop, not(debug_assertions)))]
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
         if let Some(w) = app.get_webview_window("main") {
             let _ = w.unminimize();
@@ -186,13 +196,15 @@ pub fn run() {
             let _ = w.set_focus();
         }
     }));
+    #[cfg(desktop)]
     let builder = if update::ENABLED {
         builder.plugin(update::plugin())
     } else {
         builder
     };
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_window_state::Builder::default().build());
     builder
-        .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_opener::init())
         .register_asynchronous_uri_scheme_protocol("media", |ctx, request, responder| {
             let app = ctx.app_handle().clone();
@@ -247,11 +259,18 @@ pub fn run() {
                 app: app.handle().clone(),
             });
             // The search model ships in the bundle's resources (`just model` fetches it).
-            let model_dir = app.path().resource_dir()?.join("models/multilingual-e5-small");
-            let embedder: Arc<dyn Embedder> = Arc::new(E5::new(model_dir));
-            if !embedder.available() {
-                tracing::warn!("search model files missing; search by meaning is off");
-            }
+            #[cfg(desktop)]
+            let embedder: Option<Arc<dyn Embedder>> = {
+                let model_dir = app.path().resource_dir()?.join("models/multilingual-e5-small");
+                let embedder: Arc<dyn Embedder> = Arc::new(E5::new(model_dir));
+                if !embedder.available() {
+                    tracing::warn!("search model files missing; search by meaning is off");
+                }
+                Some(embedder)
+            };
+            // No ONNX Runtime on mobile: plain search only.
+            #[cfg(mobile)]
+            let embedder: Option<Arc<dyn Embedder>> = None;
             // Meetings: its own loop, so a calendar that can't be read never touches chat.
             let agenda = Agenda::new(Arc::new(HttpCalendar::new(g.clone())), sink.clone());
             let engine = Engine::new(
@@ -262,7 +281,7 @@ pub fn run() {
                 Some(tokens),
                 sink.clone(),
                 Some(media_dir.clone()),
-                Some(embedder),
+                embedder,
             );
             // Presence: also its own loops, and nothing it does can hold up chat.
             let presence = Presence::new(
@@ -276,6 +295,7 @@ pub fn run() {
             tauri::async_runtime::spawn(engine.clone().run());
             tauri::async_runtime::spawn(engine.clone().backfill());
             tauri::async_runtime::spawn(engine.clone().index());
+            tauri::async_runtime::spawn(engine.clone().later());
             tauri::async_runtime::spawn(agenda.clone().run());
             tauri::async_runtime::spawn(presence.clone().run());
             tauri::async_runtime::spawn(presence.clone().listen());
@@ -289,8 +309,12 @@ pub fn run() {
                 staged: Mutex::new(HashMap::new()),
                 _log_guard: guard,
             });
+            #[cfg(desktop)]
             if update::ENABLED {
                 app.manage(update::Updates::default());
+                // On Windows the default menu would become a menu bar in the window, so there
+                // is no Check for Updates there; the checks at start and twice a day still run.
+                #[cfg(target_os = "macos")]
                 update::install_menu(app.handle())?;
                 tauri::async_runtime::spawn(update::run(app.handle().clone()));
             }
@@ -332,6 +356,14 @@ pub fn run() {
             commands::get_thread,
             commands::send_message,
             commands::retry_send,
+            commands::preview_message,
+            commands::schedule_message,
+            commands::scheduled_messages,
+            commands::cancel_scheduled,
+            commands::send_scheduled_now,
+            commands::set_saved,
+            commands::set_reminder,
+            commands::listed_messages,
             commands::discard_failed,
             commands::edit_message,
             commands::delete_message,

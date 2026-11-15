@@ -2,6 +2,7 @@
   import { onMount, tick } from "svelte";
   import { api, errorText, type GoogleSetupView } from "$lib/api";
   import { app } from "$lib/state.svelte";
+  import { isMac, mod } from "$lib/keys";
   import { Button } from "$lib/components/ui/button/index.js";
 
   const GUIDE = "https://github.com/timvancann/kwek/blob/main/docs/setup.md";
@@ -69,7 +70,7 @@
   }
 
   function onPasteKeydown(e: KeyboardEvent) {
-    if (e.key === "Enter" && e.metaKey && pasted.trim()) {
+    if (e.key === "Enter" && mod(e) && pasted.trim()) {
       e.preventDefault();
       void useClientFile(pasted);
     }
@@ -137,7 +138,7 @@
           placeholder={'{"installed":{"client_id":"…"}}'}
         ></textarea>
         <Button variant="secondary" class="mt-1 h-8 text-[13px]" onclick={() => void useClientFile(pasted)} disabled={busy || !pasted.trim()}>
-          Use pasted contents <span class="text-muted-foreground">⌘↩</span>
+          Use pasted contents <span class="text-muted-foreground">{isMac ? "⌘↩" : "Ctrl+Enter"}</span>
         </Button>
       </details>
       {#if changing}

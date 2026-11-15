@@ -1,7 +1,9 @@
 //! Updates for release builds: kwek asks GitHub's latest release for a newer version at
-//! start, twice a day, and when Check for Updates is chosen in the kwek menu. A newer one
-//! is offered in the window; on yes it downloads, checks the signature against the key
-//! built into kwek (`plugins.updater` in tauri.conf.json), replaces the app and restarts.
+//! start, twice a day, and (macOS only) when Check for Updates is chosen in the kwek menu.
+//! A newer one is offered in the window; on yes it downloads, checks the signature against
+//! the key built into kwek (`plugins.updater` in tauri.conf.json), replaces the app and
+//! restarts. On Windows the update is the next NSIS installer, which the updater runs
+//! (just a progress window) after kwek quits; it starts kwek again when done.
 //!
 //! Builds from source (`just run`, `just install`) leave all of this out: they carry their
 //! own Google client and signing identity, and a release would replace both.
@@ -9,6 +11,7 @@
 use std::time::Duration;
 
 use serde::Serialize;
+#[cfg(target_os = "macos")]
 use tauri::menu::{Menu, MenuItem, MenuItemKind, PredefinedMenuItem};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tauri_plugin_updater::{Update, UpdaterExt};
@@ -17,6 +20,7 @@ use tokio::sync::Mutex;
 /// Set by the release workflow (`KWEK_UPDATES=1`) when it builds.
 pub const ENABLED: bool = option_env!("KWEK_UPDATES").is_some();
 
+#[cfg(target_os = "macos")]
 const MENU_ID: &str = "check-for-updates";
 const EVERY: Duration = Duration::from_secs(12 * 60 * 60);
 /// Long enough after start for the window to listen.
@@ -52,6 +56,7 @@ pub fn plugin<R: Runtime>() -> tauri::plugin::TauriPlugin<R, tauri_plugin_update
 }
 
 /// The standard menu bar with Check for Updates… under About in the kwek menu.
+#[cfg(target_os = "macos")]
 pub fn install_menu(app: &AppHandle) -> tauri::Result<()> {
     let menu = Menu::default(app)?;
     if let Some(MenuItemKind::Submenu(kwek)) = menu.items()?.first() {

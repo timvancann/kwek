@@ -1,6 +1,8 @@
 <script lang="ts" module>
   /** Hosts without an icon this session, so a missing one isn't asked for on every render. */
   const missing = new Set<string>();
+  /** WebView2 (Windows) and Android serve custom protocols as http://<scheme>.localhost. */
+  const MEDIA = /Windows|Android/.test(navigator.userAgent) ? "http://media.localhost" : "media://localhost";
 </script>
 
 <script lang="ts">
@@ -15,7 +17,7 @@
 
 {#if host && !failed}
   <img
-    src="media://localhost/favicon/{encodeURIComponent(host)}"
+    src="{MEDIA}/favicon/{encodeURIComponent(host)}"
     alt=""
     aria-hidden="true"
     class="mr-1 inline-block size-[1.05em] rounded-[3px] align-[-0.18em]"

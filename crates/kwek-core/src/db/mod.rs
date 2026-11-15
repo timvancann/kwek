@@ -17,6 +17,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrate_002.sql"),
     include_str!("migrate_003.sql"),
     include_str!("migrate_004.sql"),
+    include_str!("migrate_005.sql"),
 ];
 
 #[derive(Clone)]
@@ -72,6 +73,7 @@ impl Db {
                  DELETE FROM space; DELETE FROM message; DELETE FROM user; DELETE FROM membership;
                  DELETE FROM my_reaction; DELETE FROM space_read_state; DELETE FROM thread_read_state;
                  DELETE FROM account; DELETE FROM kv; DELETE FROM chunk; DELETE FROM embedding;
+                 DELETE FROM saved; DELETE FROM reminder; DELETE FROM scheduled;
                  INSERT INTO message_fts(message_fts) VALUES ('rebuild');
                  INSERT INTO chunk_fts(chunk_fts) VALUES ('rebuild');
                  COMMIT;",

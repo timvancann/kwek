@@ -3,6 +3,7 @@
   import { app } from "$lib/state.svelte";
   import { cn } from "$lib/utils";
   import { presenceWords } from "$lib/presence";
+  import { MOD } from "$lib/keys";
   import Composer from "./Composer.svelte";
   import PresenceDot from "./PresenceDot.svelte";
   import MessageList from "./MessageList.svelte";
@@ -89,7 +90,7 @@
       {#if app.spaces.length === 0}
         <p>Your conversations appear here as soon as the first sync finishes.</p>
       {:else}
-        <p>Pick a conversation on the left, or press <kbd class="kbd">⌘K</kbd> to jump to one.</p>
+        <p>Pick a conversation on the left, or press <kbd class="kbd">{MOD}K</kbd> to jump to one.</p>
       {/if}
     </div>
   </section>

@@ -12,6 +12,14 @@ Without anything extra, kwek asks for the user's client file on first start and 
 
 Related search uses [multilingual-e5-small](https://huggingface.co/intfloat/multilingual-e5-small) (int8, about 135 MB), bundled with the app and run on-device with [fastembed](https://github.com/Anush008/fastembed-rs). `just model` fetches it into `models/` (pinned revision, checksummed); `just run` and `just bundle` do that for you.
 
+## Windows (experimental)
+
+`just windows` cross-compiles an unsigned NSIS installer on the Mac. It needs `brew install llvm nsis`, `cargo install cargo-xwin` and `rustup target add x86_64-pc-windows-msvc`; cargo-xwin downloads the Windows SDK and CRT headers on first use. Like `just bundle`, it bakes in `secrets/oauth-client.json` when that exists, so don't publish those installers. On Windows the refresh token goes into Credential Manager and shortcuts use Ctrl instead of ⌘. Notifications are Windows toasts; they need the Start menu shortcut the installer makes, so a debug build's toasts show up as PowerShell's. Like builds from source on the Mac, these installers don't update themselves; the Windows installer from a GitHub release does (`docs/releasing.md`), at start and twice a day, with no Check for Updates menu.
+
+## Android (experimental)
+
+`just android` builds a debug APK and installs it on the running emulator or a connected phone. It needs the Android SDK (`brew install --cask android-commandlinetools`, then `sdkmanager "ndk;29.0.14206865" "platforms;android-36" "build-tools;36.0.0"`) and JDK 17; `ANDROID_HOME` defaults to Homebrew's location. The Android build leaves out search by meaning, system notifications, the updater and window plugins, and keeps the refresh token in a file in the app's private storage.
+
 ## Commands
 
 ```sh

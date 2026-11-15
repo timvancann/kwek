@@ -11,7 +11,7 @@ pub trait TokenStore: Send + Sync {
     fn clear(&self) -> Result<()>;
 }
 
-/// macOS Keychain. Used by release builds.
+/// macOS Keychain, or Windows Credential Manager. Used by release builds.
 pub struct KeychainStore {
     account: String,
 }
@@ -57,8 +57,9 @@ impl TokenStore for KeychainStore {
     }
 }
 
-/// A 0600 file. Debug builds only: the Keychain binds an item to the binary that created it,
-/// so every rebuild would prompt.
+/// A 0600 file. On macOS for debug builds only: the Keychain binds an item to the binary
+/// that created it, so every rebuild would prompt. On Android it lives in the app's private
+/// storage, which no other app can read.
 pub struct FileStore {
     path: PathBuf,
 }
@@ -81,16 +82,17 @@ impl TokenStore for FileStore {
 
     fn save(&self, refresh_token: &str) -> Result<()> {
         use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
         if let Some(dir) = self.path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&self.path)?;
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let mut f = opts.open(&self.path)?;
         f.write_all(refresh_token.as_bytes())?;
         Ok(())
     }
@@ -104,16 +106,19 @@ impl TokenStore for FileStore {
     }
 }
 
-/// Keychain in release builds; in debug builds a file when `KWEK_TOKEN_STORE=file`.
+/// Keychain in release builds; in debug builds a file when `KWEK_TOKEN_STORE=file`. Android
+/// has no Keychain (keyring has no backend there), so always a file.
 pub fn default_store(data_dir: &std::path::Path) -> Box<dyn TokenStore> {
-    if cfg!(debug_assertions) && std::env::var("KWEK_TOKEN_STORE").as_deref() == Ok("file") {
+    if cfg!(target_os = "android") {
+        Box::new(FileStore::new(data_dir.join("refresh-token")))
+    } else if cfg!(debug_assertions) && std::env::var("KWEK_TOKEN_STORE").as_deref() == Ok("file") {
         Box::new(FileStore::new(data_dir.join("dev-refresh-token")))
     } else {
         Box::new(KeychainStore::new())
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;

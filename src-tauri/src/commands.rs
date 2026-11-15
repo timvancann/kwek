@@ -10,10 +10,10 @@ use kwek_core::presence::{Choice, NewCustom};
 use kwek_core::sync::{Engine, Outgoing};
 use kwek_core::ts;
 use kwek_core::views::{
-    AuthState, CalendarView, GoogleSetupView, MessageView, OwnPresenceView, PresenceView, ProfileView, SearchResult,
-    SpaceSummary, SyncStatus, UserRef,
+    AuthState, CalendarView, GoogleSetupView, ListedMessage, MessageView, OwnPresenceView, PresenceView, ProfileView,
+    ScheduledView, SearchResult, SpaceSummary, SyncStatus, UserRef,
 };
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 use tauri_plugin_opener::OpenerExt;
 
 use crate::AppState;
@@ -254,8 +254,7 @@ pub async fn get_thread(state: State<'_, AppState>, thread: String) -> Res<Vec<M
 /// slow connection would take minutes.
 const MAX_ATTACHMENT: usize = 50 * 1024 * 1024;
 
-/// Keeps an image or video the user added to the composer in the outbox folder until it is
-/// sent.
+/// Keeps a file the user added to the composer in the outbox folder until it is sent.
 /// The body is the raw file; `x-name` (percent-encoded) and `x-type` describe it. Returns an
 /// id for `send_message`: the webview never names a path to upload.
 #[tauri::command]
@@ -275,18 +274,21 @@ pub async fn stage_attachment(state: State<'_, AppState>, request: tauri::ipc::R
         .decode_utf8_lossy()
         .trim()
         .to_owned();
-    let content_type = header("x-type");
-    if !content_type.starts_with("image/") && !content_type.starts_with("video/") {
-        return Err("kwek can only send images and videos for now.".into());
-    }
+    // The webview leaves the type empty for extensions it doesn't know.
+    let content_type = match header("x-type") {
+        t if t.is_empty() => "application/octet-stream".to_owned(),
+        t => t,
+    };
     if data.len() > MAX_ATTACHMENT {
         return Err("That file is over 50 MB, too big to send from kwek.".into());
     }
     let name = if name.is_empty() {
         if content_type.starts_with("video/") {
             "video"
-        } else {
+        } else if content_type.starts_with("image/") {
             "image"
+        } else {
+            "file"
         }
         .to_owned()
     } else {
@@ -315,7 +317,7 @@ pub async fn stage_attachment(state: State<'_, AppState>, request: tauri::ipc::R
     Ok(id)
 }
 
-/// The user took an image out of the composer.
+/// The user took a file out of the composer.
 #[tauri::command]
 pub fn unstage_attachment(state: State<'_, AppState>, id: String) {
     if let Some(f) = state.staged.lock().unwrap().remove(&id) {
@@ -336,32 +338,110 @@ pub async fn send_message(
     if text.trim().is_empty() && ids.is_empty() {
         return Err("Nothing to send.".into());
     }
-    let files = {
-        let mut staged = state.staged.lock().unwrap();
-        // All or nothing: check every id before taking any out of the staging map.
-        if ids.iter().any(|id| !staged.contains_key(id)) {
-            return Err("An image or video is no longer attached. Add it again.".into());
-        }
-        ids.iter()
-            .filter_map(|id| staged.remove(id).map(|f| (id.clone(), f)))
-            .collect::<Vec<_>>()
-    };
-    let outgoing = files.iter().map(|(_, f)| f.clone()).collect();
+    let files = take_staged(&state, &ids)?;
     match state
         .engine
-        .send_message(&space, thread.as_deref(), &text, outgoing)
+        .send_message(&space, thread.as_deref(), &text, files.clone())
         .await
     {
         Ok(v) => Ok(v),
         Err(e) => {
-            // Nothing was queued, and the composer has already let go of the images: the
+            // Nothing was queued, and the composer has already let go of the files: the
             // staged copies have no one left to use them.
-            for (_, f) in files {
+            for f in files {
                 let _ = std::fs::remove_file(f.path);
             }
             Err(msg(e))
         }
     }
+}
+
+/// Takes staged ids out of the staging map, all or nothing.
+fn take_staged(state: &State<'_, AppState>, ids: &[String]) -> Res<Vec<Outgoing>> {
+    let mut staged = state.staged.lock().unwrap();
+    if ids.iter().any(|id| !staged.contains_key(id)) {
+        return Err("An attachment is no longer there. Add it again.".into());
+    }
+    Ok(ids.iter().filter_map(|id| staged.remove(id)).collect())
+}
+
+/// Keeps a message to send at `at_us`; kwek sends it then, or as soon as it runs again.
+#[tauri::command]
+pub async fn schedule_message(
+    state: State<'_, AppState>,
+    space: String,
+    thread: Option<String>,
+    text: String,
+    attachments: Option<Vec<String>>,
+    at_us: i64,
+) -> Res<()> {
+    let text = text.trim_end().to_owned();
+    let ids = attachments.unwrap_or_default();
+    if text.trim().is_empty() && ids.is_empty() {
+        return Err("Nothing to send.".into());
+    }
+    if at_us <= ts::now() {
+        return Err("Pick a time that's still to come.".into());
+    }
+    let files = take_staged(&state, &ids)?;
+    let result = state
+        .engine
+        .schedule(&space, thread.as_deref(), &text, files.clone(), at_us)
+        .await;
+    if let Err(e) = result {
+        for f in files {
+            let _ = std::fs::remove_file(f.path);
+        }
+        return Err(msg(e));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn scheduled_messages(state: State<'_, AppState>) -> Res<Vec<ScheduledView>> {
+    blocking(&state, |e| e.scheduled()).await
+}
+
+#[tauri::command]
+pub async fn cancel_scheduled(state: State<'_, AppState>, id: i64) -> Res<()> {
+    state.engine.cancel_scheduled(id).await.map_err(msg)
+}
+
+#[tauri::command]
+pub async fn send_scheduled_now(state: State<'_, AppState>, id: i64) -> Res<()> {
+    state.engine.send_scheduled_now(id).await.map_err(msg)
+}
+
+#[tauri::command]
+pub async fn set_saved(state: State<'_, AppState>, message: String, saved: bool) -> Res<()> {
+    state.engine.set_saved(&message, saved).await.map_err(msg)
+}
+
+/// `at_us: None` clears the reminder.
+#[tauri::command]
+pub async fn set_reminder(state: State<'_, AppState>, message: String, at_us: Option<i64>) -> Res<()> {
+    if at_us.is_some_and(|a| a <= ts::now()) {
+        return Err("Pick a time that's still to come.".into());
+    }
+    state.engine.set_reminder(&message, at_us).await.map_err(msg)
+}
+
+/// `kind`: `activity`, `saved` or `reminders`.
+#[tauri::command]
+pub async fn listed_messages(state: State<'_, AppState>, kind: String) -> Res<Vec<ListedMessage>> {
+    blocking(&state, move |e| match kind.as_str() {
+        "activity" => e.activity(),
+        "saved" => e.saved(),
+        "reminders" => e.reminders(),
+        other => Err(Error::Other(format!("no such list: {other}"))),
+    })
+    .await
+}
+
+/// The composer's text rendered as it will look once sent.
+#[tauri::command]
+pub async fn preview_message(state: State<'_, AppState>, text: String) -> Res<Vec<kwek_core::render::Block>> {
+    blocking(&state, move |e| e.preview(&text)).await
 }
 
 #[tauri::command]
@@ -463,10 +543,18 @@ pub fn open_url(app: AppHandle, url: String) -> Res<()> {
 /// Installs the update the last check found and restarts kwek; only returns on failure.
 #[tauri::command]
 pub async fn install_update(app: AppHandle) -> Res<()> {
-    if !crate::update::ENABLED {
-        return Err("Builds from source don't update themselves.".into());
+    #[cfg(desktop)]
+    {
+        if !crate::update::ENABLED {
+            return Err("Builds from source don't update themselves.".into());
+        }
+        crate::update::install(&app).await
     }
-    crate::update::install(&app).await
+    #[cfg(mobile)]
+    {
+        let _ = app;
+        Err("kwek doesn't update itself on this device.".into())
+    }
 }
 
 /// Saves an attachment to ~/Downloads and opens it.
@@ -482,7 +570,7 @@ pub async fn download_attachment(
         .media_file(&state.media_dir, &resource)
         .await
         .map_err(msg)?;
-    let dir = dirs_downloads().ok_or("No Downloads folder found.")?;
+    let dir = app.path().download_dir().map_err(|_| "No Downloads folder found.")?;
     let safe: String = name
         .chars()
         .map(|c| {
@@ -524,6 +612,7 @@ pub async fn download_attachment(
 
 /// Sets `com.apple.quarantine` the way browsers do: flags 0081 (downloaded, not yet
 /// approved), hex timestamp, agent name.
+#[cfg(target_os = "macos")]
 fn quarantine(path: &std::path::Path) -> std::io::Result<()> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -541,6 +630,17 @@ fn quarantine(path: &std::path::Path) -> std::io::Result<()> {
     }
 }
 
-fn dirs_downloads() -> Option<std::path::PathBuf> {
-    std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join("Downloads"))
+/// The Mark of the Web, as browsers write it: zone 3 (internet), so SmartScreen and Office's
+/// Protected View check the file before it runs or opens.
+#[cfg(windows)]
+fn quarantine(path: &std::path::Path) -> std::io::Result<()> {
+    let mut stream = path.as_os_str().to_owned();
+    stream.push(":Zone.Identifier");
+    std::fs::write(stream, "[ZoneTransfer]\r\nZoneId=3\r\n")
+}
+
+/// Nothing comparable on Android or Linux.
+#[cfg(not(any(target_os = "macos", windows)))]
+fn quarantine(_path: &std::path::Path) -> std::io::Result<()> {
+    Ok(())
 }

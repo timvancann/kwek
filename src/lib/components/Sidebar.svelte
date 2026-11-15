@@ -4,10 +4,12 @@
   import { app, type SpaceSort } from "$lib/state.svelte";
   import { toast } from "svelte-sonner";
   import CalendarIcon from "@lucide/svelte/icons/calendar";
+  import Inbox from "@lucide/svelte/icons/inbox";
   import MapPin from "@lucide/svelte/icons/map-pin";
   import X from "@lucide/svelte/icons/x";
   import { cn } from "$lib/utils";
   import { tick } from "svelte";
+  import { ARIA_MOD, MOD, MOD_SHIFT } from "$lib/keys";
   import Avatar from "./Avatar.svelte";
   import SyncIndicator from "./SyncIndicator.svelte";
   import StatusPicker from "./StatusPicker.svelte";
@@ -169,23 +171,32 @@
       onclick={() => (app.overlay = "switcher")}
     >
       <span class="flex-1">Jump to</span>
-      <kbd class="font-sans text-[11px]" aria-label="Command K">⌘K</kbd>
+      <kbd class="font-sans text-[11px]" aria-label="{ARIA_MOD === 'Meta' ? 'Command' : 'Control'} K">{MOD}K</kbd>
     </button>
     <button
       class="inline-flex size-9 shrink-0 items-center justify-center rounded-lg border border-border bg-background text-muted-foreground hover:border-input hover:text-foreground"
       aria-label="Search messages"
-      aria-keyshortcuts="Meta+F"
-      title="Search messages (⌘F)"
+      aria-keyshortcuts="{ARIA_MOD}+F"
+      title="Search messages ({MOD}F)"
       onclick={() => (app.overlay = "search")}
     >
       <Search class="size-4" aria-hidden="true" />
+    </button>
+    <button
+      class="inline-flex size-9 shrink-0 items-center justify-center rounded-lg border border-border bg-background text-muted-foreground hover:border-input hover:text-foreground"
+      aria-label="Activity"
+      aria-keyshortcuts="{ARIA_MOD}+Shift+A"
+      title="Activity: mentions, replies, saved, reminders, scheduled ({MOD_SHIFT}A)"
+      onclick={() => app.openActivity()}
+    >
+      <Inbox class="size-4" aria-hidden="true" />
     </button>
     {#if app.calendar.state === "ok"}
       <button
         class="inline-flex size-9 shrink-0 items-center justify-center rounded-lg border border-border bg-background text-muted-foreground hover:border-input hover:text-foreground"
         aria-label="Upcoming meetings"
-        aria-keyshortcuts="Meta+Shift+J"
-        title="Upcoming meetings (⌘⇧J)"
+        aria-keyshortcuts="{ARIA_MOD}+Shift+J"
+        title="Upcoming meetings ({MOD_SHIFT}J)"
         onclick={() => (app.overlay = "agenda")}
       >
         <CalendarIcon class="size-4" aria-hidden="true" />
@@ -338,8 +349,8 @@
     <section aria-label="Next meeting" class="mx-3 mb-2">
       <button
         class="flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-left text-[12px] text-muted-foreground hover:bg-sidebar-hover"
-        title="Upcoming meetings (⌘⇧J)"
-        aria-keyshortcuts="Meta+Shift+J"
+        title="Upcoming meetings ({MOD_SHIFT}J)"
+        aria-keyshortcuts="{ARIA_MOD}+Shift+J"
         onclick={() => (app.overlay = "agenda")}
       >
         <CalendarIcon class="size-3.5 shrink-0" aria-hidden="true" />
@@ -363,8 +374,8 @@
       {/if}
       <button
         class="min-w-0 flex-1 text-left"
-        title="Upcoming meetings (⌘⇧J)"
-        aria-keyshortcuts="Meta+Shift+J"
+        title="Upcoming meetings ({MOD_SHIFT}J)"
+        aria-keyshortcuts="{ARIA_MOD}+Shift+J"
         onclick={() => (app.overlay = "agenda")}
       >
         <span class="block truncate text-[13px] font-medium">{next.title}</span>
@@ -376,8 +387,8 @@
         <button
           class="shrink-0 rounded-md bg-primary px-2.5 py-1 text-[12px] font-medium text-primary-foreground hover:bg-primary/85"
           aria-label="Join {next.title}"
-          aria-keyshortcuts="Meta+J"
-          title="Join in your browser (⌘J)"
+          aria-keyshortcuts="{ARIA_MOD}+J"
+          title="Join in your browser ({MOD}J)"
           onclick={() => next?.joinUrl && void api.openUrl(next.joinUrl)}>Join</button
         >
       {/if}

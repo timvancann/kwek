@@ -94,10 +94,119 @@ struct Style {
     strike: u32,
 }
 
+/// Chat syntax, as the composer sends it, to the Markdown [`parse`] reads: `*bold*`,
+/// `_italic_`, `~strike~`, `<url|label>` links, and every typed line break kept. Code is left
+/// alone. For a message until Google's own Markdown of it arrives, and for the preview.
+pub fn chat_to_markdown(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let n = chars.len();
+    let at = |i: usize, pat: &str| pat.chars().enumerate().all(|(k, c)| chars.get(i + k) == Some(&c));
+    // Formatting marks only count at word edges, so snake_case and 2 * 3 stay as they are.
+    let edge = |c: Option<&char>| c.is_none_or(|c| !c.is_alphanumeric());
+    let mut out = String::with_capacity(s.len() + 8);
+    let mut i = 0;
+    while i < n {
+        let c = chars[i];
+        if at(i, "```") {
+            let end = (i + 3..n).find(|&j| at(j, "```")).map(|j| j + 3).unwrap_or(n);
+            out.extend(&chars[i..end]);
+            i = end;
+            continue;
+        }
+        if c == '`'
+            && let Some(j) = (i + 1..n).take_while(|&j| chars[j] != '\n').find(|&j| chars[j] == '`')
+        {
+            out.extend(&chars[i..=j]);
+            i = j + 1;
+            continue;
+        }
+        if matches!(c, '*' | '_' | '~')
+            && edge(i.checked_sub(1).and_then(|p| chars.get(p)))
+            && chars.get(i + 1).is_some_and(|x| !x.is_whitespace() && *x != c)
+            && let Some(j) = (i + 2..n)
+                .take_while(|&j| chars[j] != '\n')
+                .find(|&j| chars[j] == c && !chars[j - 1].is_whitespace() && edge(chars.get(j + 1)))
+        {
+            let mark = match c {
+                '*' => "**",
+                '_' => "*",
+                _ => "~~",
+            };
+            let inner: String = chars[i + 1..j].iter().collect();
+            out.push_str(mark);
+            out.push_str(&chat_to_markdown(&inner));
+            out.push_str(mark);
+            i = j + 1;
+            continue;
+        }
+        if c == '<'
+            && let Some(j) = (i + 1..n).take_while(|&j| chars[j] != '\n').find(|&j| chars[j] == '>')
+        {
+            let inner: String = chars[i + 1..j].iter().collect();
+            if let Some((url, label)) = inner.split_once('|')
+                && (url.starts_with("https://") || url.starts_with("http://") || url.starts_with("mailto:"))
+            {
+                out.push_str(&format!("[{label}]({url})"));
+                i = j + 1;
+                continue;
+            }
+        }
+        if c == '\n' {
+            // A single break is a hard break; trailing spaces before a list or quote line,
+            // or at the end, are dropped by the parser.
+            let single = i > 0 && chars[i - 1] != '\n' && chars.get(i + 1).is_some_and(|x| *x != '\n');
+            out.push_str(if single { "  \n" } else { "\n" });
+            i += 1;
+            continue;
+        }
+        if c == '#' && (i == 0 || chars[i - 1] == '\n') {
+            out.push('\\');
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
+}
+
+/// Chat's rule for code blocks: everything between a pair of ```` ``` ```` is code, line breaks
+/// included, wherever the fences sit. Markdown only knows fences on their own lines, so each
+/// pair is rewritten into one; an unpaired fence is left alone.
+fn normalize_fences(s: &str) -> std::borrow::Cow<'_, str> {
+    let parts: Vec<&str> = s.split("```").collect();
+    if parts.len() < 3 {
+        return s.into();
+    }
+    let mut out = String::with_capacity(s.len() + 16);
+    let mut i = 0;
+    while i < parts.len() {
+        out.push_str(parts[i]);
+        // parts[i + 1] is code only when a closing fence follows it.
+        if i + 2 < parts.len() {
+            let code = parts[i + 1];
+            let code = code.strip_prefix("\r\n").or_else(|| code.strip_prefix('\n')).unwrap_or(code);
+            let code = code.strip_suffix('\n').unwrap_or(code);
+            if !out.is_empty() && !out.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push_str("```\n");
+            out.push_str(code);
+            out.push_str("\n```\n");
+            i += 2;
+        } else if i + 1 < parts.len() {
+            out.push_str("```");
+            i += 1;
+        } else {
+            i += 1;
+        }
+    }
+    out.into()
+}
+
 pub fn parse(markdown: &str, ctx: &Ctx) -> Vec<Block> {
     let mut stack: Vec<Frame> = vec![Frame::Blocks(Vec::new())];
     let mut style = Style::default();
-    let parser = Parser::new_ext(markdown, Options::ENABLE_STRIKETHROUGH);
+    let markdown = normalize_fences(markdown);
+    let parser = Parser::new_ext(&markdown, Options::ENABLE_STRIKETHROUGH);
     // The parser splits text at `_`, `<` and friends; mentions and URLs can span several
     // text events, so consecutive inline text is coalesced before it is scanned.
     let mut pending = String::new();
@@ -645,6 +754,29 @@ mod tests {
                     text: "fn main() {}".into(),
                 }],
             ),
+            // Chat's own code blocks: everything between the fences is code, even when the
+            // fences share a line with it. Markdown would take `line1` for a language, or
+            // read the whole as inline code and join the lines.
+            (
+                "```line1\nline2```",
+                vec![Block::Code {
+                    text: "line1\nline2".into(),
+                }],
+            ),
+            (
+                "see ```a\n  b``` ok",
+                vec![
+                    para(vec![t("see")]),
+                    Block::Code { text: "a\n  b".into() },
+                    para(vec![t("ok")]),
+                ],
+            ),
+            ("```one line```", vec![Block::Code { text: "one line".into() }]),
+            // An unclosed fence stays as Markdown has it.
+            (
+                "```\nopen",
+                vec![Block::Code { text: "open".into() }],
+            ),
             (
                 "> quoted\n\nafter",
                 vec![
@@ -786,12 +918,60 @@ mod tests {
         );
     }
 
+    /// What the composer sends is Chat syntax; until Google's own Markdown comes back, kwek
+    /// renders it through `chat_to_markdown`.
+    #[test]
+    fn chat_syntax() {
+        let strike = |s: &str| Inline::Text {
+            text: s.into(),
+            bold: false,
+            italic: false,
+            strike: true,
+        };
+        let cases: Vec<(&str, Vec<Block>)> = vec![
+            (
+                "*bold* _it_ ~gone~",
+                vec![para(vec![b("bold"), t(" "), i("it"), t(" "), strike("gone")])],
+            ),
+            // A typed line break stays one.
+            ("one\ntwo", vec![para(vec![t("one"), Inline::Break, t("two")])]),
+            ("one\n\ntwo", vec![para(vec![t("one")]), para(vec![t("two")])]),
+            // Not formatting: inside words, around spaces, inside code.
+            ("snake_case_name a * b", vec![para(vec![t("snake_case_name a * b")])]),
+            (
+                "`*x*` *y*",
+                vec![para(vec![Inline::Code { text: "*x*".into() }, t(" "), b("y")])],
+            ),
+            ("```\n*x*\n_y_\n```", vec![Block::Code { text: "*x*\n_y_".into() }]),
+            // A bullet, not bold.
+            (
+                "* a\n* b",
+                vec![Block::List {
+                    ordered: false,
+                    start: 1,
+                    items: vec![vec![para(vec![t("a")])], vec![para(vec![t("b")])]],
+                }],
+            ),
+            (
+                "see <https://x.nl|the site>",
+                vec![para(vec![t("see "), link("https://x.nl", "the site")])],
+            ),
+            ("> quoted", vec![Block::Quote { blocks: vec![para(vec![t("quoted")])] }]),
+            // Chat shows a leading # as is.
+            ("#general", vec![para(vec![t("#general")])]),
+        ];
+        for (input, want) in cases {
+            assert_eq!(p(&chat_to_markdown(input)), want, "input: {input:?}");
+        }
+    }
+
     #[test]
     fn never_panics_on_odd_input() {
         for s in [
             "`", "```", "<", "<users/>", "**_~", "- ", "> ", "[](", "\u{FFFC}", "1.", "* * *", "[a](b", "<users/1",
         ] {
             let _ = p(s);
+            let _ = p(&chat_to_markdown(s));
         }
     }
 }

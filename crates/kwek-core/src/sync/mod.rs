@@ -80,6 +80,9 @@ pub trait Sink: Send + Sync {
     /// Colleagues whose presence changed; an empty list means forget them all.
     fn presence(&self, _changed: Vec<views::PresenceView>) {}
     fn own_presence(&self, _view: views::OwnPresenceView) {}
+    /// Saved messages, reminders or scheduled messages changed; with `mark` when it was one
+    /// message's saved or reminder state.
+    fn later_changed(&self, _mark: Option<views::Mark>) {}
 }
 
 #[derive(Default)]
@@ -1089,6 +1092,11 @@ impl Engine {
             let my = mine.get(&r.name).map(Vec::as_slice).unwrap_or(&[]);
             out.push(b.message(r, st, my, uri.as_deref()));
         }
+        let (saved, reminders) = later::marks(c, &names)?;
+        for v in &mut out {
+            v.saved = saved.contains(&v.name);
+            v.remind_at_us = reminders.get(&v.name).copied();
+        }
         Ok(out)
     }
 
@@ -1726,8 +1734,8 @@ impl Engine {
         Ok(())
     }
 
-    /// Staged files that unsent messages (pending or failed) still need; everything else in
-    /// the outbox is left over from a composer that was never sent.
+    /// Staged files that unsent messages (pending, failed or scheduled) still need;
+    /// everything else in the outbox is left over from a composer that was never sent.
     pub fn staged_in_use(&self) -> Result<Vec<std::path::PathBuf>> {
         self.db.with(|c| {
             let mut st = c.prepare("SELECT raw FROM message WHERE local_state != 'synced'")?;
@@ -1737,6 +1745,7 @@ impl Engine {
                 .filter_map(|r| serde_json::from_str::<serde_json::Value>(r).ok())
                 .filter_map(|v| serde_json::from_value::<Vec<Outgoing>>(v.get("outbox")?.clone()).ok())
                 .flatten()
+                .chain(later::scheduled_files(c)?)
                 .map(|f| f.path)
                 .collect())
         })
@@ -2049,6 +2058,15 @@ impl Engine {
     pub fn message_view(&self, name: &str) -> Result<Option<MessageView>> {
         Ok(self.message_views_by_name(&[name.to_owned()])?.into_iter().next())
     }
+
+    /// The composer's text as it will look once sent.
+    pub fn preview(&self, text: &str) -> Result<Vec<crate::render::Block>> {
+        let me = self.me();
+        let users = self.db.with(|c| read::all_users(c))?;
+        let name_of = |u: &str| users.get(u).and_then(|u| u.display_name.clone());
+        let ctx = crate::render::Ctx { me: &me, name_of: &name_of };
+        Ok(crate::render::parse(&crate::render::chat_to_markdown(text), &ctx))
+    }
 }
 
 impl crate::presence::Roster for Engine {
@@ -2142,6 +2160,8 @@ fn short(e: &Error) -> String {
         s
     }
 }
+
+mod later;
 
 #[cfg(test)]
 mod tests;

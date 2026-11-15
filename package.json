@@ -1,7 +1,7 @@
 {
   "name": "kwek",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.4.0",
   "license": "SEE LICENSE IN LICENSE",
   "type": "module",
   "scripts": {
@@ -28,6 +28,8 @@
     "@tauri-apps/plugin-opener": "^2.7.2",
     "bits-ui": "^2.20.6",
     "clsx": "^2.1.1",
+    "emojibase-data": "18.0.0",
+    "highlight.js": "11.12.0",
     "svelte-sonner": "^1.2.3",
     "tailwind-merge": "^3.7.0",
     "tailwind-variants": "^4.0.1"

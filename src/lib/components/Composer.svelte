@@ -1,25 +1,52 @@
 <script lang="ts" module>
-  /** An image or video in the composer: shown from `url`, kept for sending once `id` is set. */
-  export type DraftImage = { key: string; name: string; url: string; video: boolean; id: string | null; error: string | null };
+  /** A file in the composer: images and videos are previewed from `url`; kept for sending once
+   * `id` is set. */
+  export type DraftImage = {
+    key: string;
+    name: string;
+    url: string;
+    kind: "image" | "video" | "file";
+    id: string | null;
+    error: string | null;
+  };
 
-  /** Matches the limit in Rust; checked here too so a big video isn't read only to be refused. */
+  /** Matches the limit in Rust; checked here too so a big file isn't read only to be refused. */
   const MAX_ATTACHMENT = 50 * 1024 * 1024;
-  const sendable = (f: File) => f.type.startsWith("image/") || f.type.startsWith("video/");
 
-  // Unsent drafts per conversation, text and images.
+  // Unsent drafts per conversation, text and attachments.
   const drafts = new Map<string, string>();
   const draftImages = new Map<string, DraftImage[]>();
 </script>
 
 <script lang="ts">
   import { api, errorText, type UserRef } from "$lib/api";
-  import { searchEmoji } from "$lib/emoji";
+  import { emoji as emojiData, searchEmoji, usedEmoji } from "$lib/emoji.svelte";
+  import * as Popover from "$lib/components/ui/popover/index.js";
+  import EmojiPicker from "./EmojiPicker.svelte";
+  import Smile from "@lucide/svelte/icons/smile";
+  import Type from "@lucide/svelte/icons/type";
+  import Bold from "@lucide/svelte/icons/bold";
+  import Italic from "@lucide/svelte/icons/italic";
+  import Strikethrough from "@lucide/svelte/icons/strikethrough";
+  import LinkIcon from "@lucide/svelte/icons/link";
+  import List from "@lucide/svelte/icons/list";
+  import Quote from "@lucide/svelte/icons/text-quote";
+  import Code from "@lucide/svelte/icons/code";
+  import SquareCode from "@lucide/svelte/icons/square-code";
+  import Eye from "@lucide/svelte/icons/eye";
+  import ChevronUp from "@lucide/svelte/icons/chevron-up";
+  import WhenPicker from "./WhenPicker.svelte";
+  import Blocks from "./Blocks.svelte";
+  import type { Block } from "$lib/bindings/Block";
+  import { codeBlock, isUrl, link, prefixLines, wrap, type Edit } from "$lib/markup";
+  import { MOD, MOD_SHIFT, mod, isMac } from "$lib/keys";
   import { app } from "$lib/state.svelte";
   import { cn } from "$lib/utils";
   import { tick } from "svelte";
   import { toast } from "svelte-sonner";
   import SendHorizontal from "@lucide/svelte/icons/send-horizontal";
-  import ImagePlus from "@lucide/svelte/icons/image-plus";
+  import Paperclip from "@lucide/svelte/icons/paperclip";
+  import FileIcon from "@lucide/svelte/icons/file";
   import X from "@lucide/svelte/icons/x";
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
 
@@ -117,6 +144,7 @@
     const before = text.slice(0, caret);
     const mention = /(^|\s)@([\p{L}\p{N}._-]{0,30})$/u.exec(before);
     const emoji = /(^|\s):([a-z0-9_+-]{2,30})$/.exec(before);
+    const closed = /(^|\s):([a-z0-9_+-]{1,40}):$/.exec(before);
     if (mention) {
       const q = mention[2].toLowerCase();
       trigger = { start: caret - mention[2].length - 1, end: caret };
@@ -127,7 +155,18 @@
       if ("all".startsWith(q)) suggestions.push({ id: "users/all", label: "all", detail: "Everyone in this conversation", insert: "@all ", mention: "users/all" });
     } else if (emoji) {
       trigger = { start: caret - emoji[2].length - 1, end: caret };
-      suggestions = searchEmoji(emoji[2]).map(([n, e]) => ({ id: n, label: `${e}  :${n}:`, insert: e }));
+      suggestions = searchEmoji(emoji[2]).map((x) => ({ id: x.e, label: `${x.e}  :${x.codes[0]}:`, insert: x.e }));
+    } else if (closed) {
+      // A whole `:shortcode:` typed out becomes its emoji, as in Slack.
+      const x = emojiData.list.find((x) => x.codes.includes(closed[2]));
+      if (x) {
+        const start = caret - closed[2].length - 2;
+        text = text.slice(0, start) + x.e + text.slice(caret);
+        usedEmoji(x.e);
+        void tick().then(() => el?.setSelectionRange(start + x.e.length, start + x.e.length));
+      }
+      trigger = null;
+      suggestions = [];
     } else {
       trigger = null;
       suggestions = [];
@@ -139,6 +178,7 @@
     if (!trigger || !el) return;
     text = text.slice(0, trigger.start) + s.insert + text.slice(trigger.end);
     if (s.mention) mentionMap.set(s.label, s.mention);
+    else usedEmoji(s.insert);
     const pos = trigger.start + s.insert.length;
     suggestions = [];
     trigger = null;
@@ -158,6 +198,142 @@
     return out;
   }
 
+  // ------------------------------------------------------------- formatting
+
+  /** Applies a formatting edit as typing would, so ⌘Z undoes it. */
+  function apply(ed: Edit) {
+    if (!el) return;
+    el.focus();
+    el.setSelectionRange(ed.start, ed.end);
+    // Deprecated, but the one way to edit a textarea that its undo history keeps.
+    if (!document.execCommand("insertText", false, ed.insert)) {
+      text = text.slice(0, ed.start) + ed.insert + text.slice(ed.end);
+    }
+    void tick().then(() => {
+      el?.setSelectionRange(ed.selStart, ed.selEnd);
+      autosize();
+    });
+  }
+
+  type Format = "bold" | "italic" | "strike" | "code" | "block" | "list" | "quote" | "link";
+  function format(f: Format) {
+    if (!el) return;
+    const [s, e] = [el.selectionStart, el.selectionEnd];
+    const ed =
+      f === "bold"
+        ? wrap(text, s, e, "*", "bold")
+        : f === "italic"
+          ? wrap(text, s, e, "_", "italic")
+          : f === "strike"
+            ? wrap(text, s, e, "~", "strikethrough")
+            : f === "code"
+              ? wrap(text, s, e, "`", "code")
+              : f === "block"
+                ? codeBlock(text, s, e)
+                : f === "list"
+                  ? prefixLines(text, s, e, "- ")
+                  : f === "quote"
+                    ? prefixLines(text, s, e, "> ")
+                    : link(text, s, e);
+    apply(ed);
+  }
+
+  /** ⌘B and friends, as in Slack; true when the key was one. */
+  function formatKey(e: KeyboardEvent): boolean {
+    if (!mod(e)) return false;
+    const f: Format | null =
+      !e.shiftKey && !e.altKey
+        ? e.code === "KeyB"
+          ? "bold"
+          : e.code === "KeyI"
+            ? "italic"
+            : null
+        : e.shiftKey && e.altKey
+          ? e.code === "KeyC"
+            ? "block"
+            : null
+          : // Not with Alt: AltGr is Ctrl+Alt on Windows and types [ ] ć and friends.
+            !e.shiftKey || e.altKey
+            ? null
+            : e.code === "KeyX"
+            ? "strike"
+            : e.code === "KeyC"
+              ? "code"
+              : e.code === "KeyU"
+                ? "link"
+                : e.code === "Digit8"
+                  ? "list"
+                  : e.code === "Digit9"
+                    ? "quote"
+                    : null;
+    if (!f) return false;
+    e.preventDefault();
+    format(f);
+    return true;
+  }
+
+  let showFormatting = $state(loadFlag("kwek.formatBar"));
+  let preview = $state(false);
+  let previewBlocks = $state<Block[]>([]);
+  function loadFlag(key: string) {
+    try {
+      return localStorage.getItem(key) === "1";
+    } catch {
+      return false;
+    }
+  }
+  function toggleFormatting() {
+    showFormatting = !showFormatting;
+    if (!showFormatting) preview = false;
+    try {
+      localStorage.setItem("kwek.formatBar", showFormatting ? "1" : "0");
+    } catch {
+      // Private storage unavailable: remembered until restart.
+    }
+    el?.focus();
+  }
+  // The preview follows the text, a beat behind typing.
+  $effect(() => {
+    const t = text;
+    if (!preview) return;
+    const id = setTimeout(() => {
+      api
+        .previewMessage(t)
+        .then((b) => (previewBlocks = b))
+        .catch(() => (previewBlocks = []));
+    }, 120);
+    return () => clearTimeout(id);
+  });
+
+  /** A URL pasted over selected text links it, as in Slack. */
+  function pasteLink(e: ClipboardEvent): boolean {
+    const url = e.clipboardData?.getData("text/plain") ?? "";
+    if (!el || el.selectionStart === el.selectionEnd || !isUrl(url) || isUrl(text.slice(el.selectionStart, el.selectionEnd))) return false;
+    e.preventDefault();
+    apply(link(text, el.selectionStart, el.selectionEnd, url.trim()));
+    return true;
+  }
+
+  // ------------------------------------------------------------- emoji button
+
+  let emojiOpen = $state(false);
+  /** Where the caret was when the picker took focus. */
+  let caretAt = { start: 0, end: 0 };
+  /** Picked, to insert once the picker has closed and let go of the focus. */
+  let picked: string | null = null;
+  function insertEmoji(e: string) {
+    picked = e;
+    emojiOpen = false;
+  }
+  /** A popover closing hands the focus back to the text, not to its button. */
+  function backToText(ev: Event) {
+    ev.preventDefault();
+    const e = picked;
+    picked = null;
+    if (e) apply({ start: caretAt.start, end: caretAt.end, insert: e, selStart: caretAt.start + e.length, selEnd: caretAt.start + e.length });
+    else el?.focus();
+  }
+
   // ------------------------------------------------------------- images
 
   const staging = $derived(images.some((i) => !i.id && !i.error));
@@ -170,8 +346,7 @@
     for (const [k, list] of draftImages) draftImages.set(k, list.map((i) => (i.key === key ? { ...i, ...change } : i)));
   }
 
-  /** Adds images and videos to the draft and keeps each for sending straight away, so sending
-   * is quick. */
+  /** Adds files to the draft and keeps each for sending straight away, so sending is quick. */
   /** Pasted screenshots all arrive as "image.png"; number them so each can be told apart. */
   let pasted = 0;
   function displayName(file: File) {
@@ -180,15 +355,11 @@
 
   function addFiles(files: Iterable<File>) {
     if (editing) {
-      app.say("Images and videos can't be added to an edit.");
+      app.say("Attachments can't be added to an edit.");
       return;
     }
     let added = 0;
     for (const file of files) {
-      if (!sendable(file)) {
-        toast.error(`${file.name || "That file"} isn't an image or a video. kwek can only send those for now.`);
-        continue;
-      }
       if (file.size > MAX_ATTACHMENT) {
         toast.error(`${file.name || "That file"} is over 50 MB, too big to send from kwek.`);
         continue;
@@ -197,7 +368,7 @@
         key: crypto.randomUUID(),
         name: displayName(file),
         url: URL.createObjectURL(file),
-        video: file.type.startsWith("video/"),
+        kind: file.type.startsWith("video/") ? "video" : file.type.startsWith("image/") ? "image" : "file",
         id: null,
         error: null,
       };
@@ -242,7 +413,8 @@
   const blockedBy = $derived(staging ? "Preparing attachments" : broken ? "Remove the attachment that couldn't be added to send" : null);
 
   function onPaste(e: ClipboardEvent) {
-    const files = [...(e.clipboardData?.files ?? [])].filter(sendable);
+    if (pasteLink(e)) return;
+    const files = [...(e.clipboardData?.files ?? [])];
     if (files.length && !editing) {
       e.preventDefault();
       addFiles(files);
@@ -287,7 +459,33 @@
     }
   }
 
+  let laterOpen = $state(false);
+  /** Keeps the message to send at `atUs`; the draft goes only once that worked. */
+  async function scheduleSubmit(atUs: number) {
+    laterOpen = false;
+    if (!canSend || editing) return;
+    const ids = images.map((i) => i.id).filter((id): id is string => !!id);
+    const key = draftKey;
+    const sent = images;
+    try {
+      await app.schedule(withMentions(text.trim()), where === "thread" ? thread : null, ids, atUs);
+    } catch {
+      return;
+    }
+    for (const i of sent) URL.revokeObjectURL(i.url);
+    drafts.delete(key);
+    draftImages.delete(key);
+    // Switched conversations meanwhile: the composer now holds another draft, which stays.
+    if (key !== draftKey) return;
+    images = [];
+    text = "";
+    mentionMap = new Map();
+    void tick().then(autosize);
+  }
+  const scheduledHere = $derived(app.scheduled.filter((s) => s.space === space && (where === "thread" ? s.thread === thread : !s.thread)).length);
+
   function onKeydown(e: KeyboardEvent) {
+    if (formatKey(e)) return;
     if (suggestions.length) {
       if (e.key === "ArrowDown" || e.key === "ArrowUp") {
         e.preventDefault();
@@ -346,6 +544,13 @@
     </ul>
   {/if}
 
+  {#if scheduledHere && !editing}
+    <p class="mb-1 text-[12px] text-muted-foreground">
+      <button class="underline underline-offset-2 hover:text-foreground" onclick={() => app.openActivity("scheduled")}
+        >{scheduledHere} {scheduledHere === 1 ? "message" : "messages"} scheduled here</button
+      >
+    </p>
+  {/if}
   {#if editing}
     <p class="mb-1 flex items-center gap-2 text-[12px] text-muted-foreground" id="edit-hint-{where}">
       <span class="rounded-sm bg-highlight-strong px-1.5 font-medium text-foreground">Editing</span>
@@ -368,15 +573,67 @@
   >
     {#if dragging}
       <div class="pointer-events-none absolute inset-0 z-10 grid place-items-center rounded-xl bg-accent-soft/90 text-[14px] font-medium text-accent">
-        Drop images or videos to add them
+        Drop files to attach them
       </div>
+    {/if}
+    {#if showFormatting}
+      <div class="flex items-center gap-0.5 border-b border-border px-2 py-1" role="toolbar" aria-label="Formatting">
+        {#snippet tool(f: Format, label: string, keys: string, Icon: typeof Bold)}
+          <button type="button" class="tool" aria-label={label} title="{label} ({keys})" onclick={() => format(f)}><Icon aria-hidden="true" /></button>
+        {/snippet}
+        {@render tool("bold", "Bold", `${MOD}B`, Bold)}
+        {@render tool("italic", "Italic", `${MOD}I`, Italic)}
+        {@render tool("strike", "Strikethrough", `${MOD_SHIFT}X`, Strikethrough)}
+        <span class="mx-1 h-4 w-px bg-border" aria-hidden="true"></span>
+        {@render tool("link", "Link", `${MOD_SHIFT}U`, LinkIcon)}
+        <span class="mx-1 h-4 w-px bg-border" aria-hidden="true"></span>
+        {@render tool("list", "Bulleted list", `${MOD_SHIFT}8`, List)}
+        {@render tool("quote", "Quote", `${MOD_SHIFT}9`, Quote)}
+        <span class="mx-1 h-4 w-px bg-border" aria-hidden="true"></span>
+        {@render tool("code", "Code", `${MOD_SHIFT}C`, Code)}
+        {@render tool("block", "Code block", `${isMac ? "⌘⌥⇧" : "Ctrl+Alt+Shift+"}C`, SquareCode)}
+        <button
+          type="button"
+          class={cn("tool ml-auto", preview && "on")}
+          aria-pressed={preview}
+          aria-label="Preview"
+          title="Preview how it will look"
+          onclick={() => {
+            preview = !preview;
+            el?.focus();
+          }}><Eye aria-hidden="true" /></button
+        >
+      </div>
+      {#if preview}
+        <div class="max-h-48 overflow-y-auto border-b border-border bg-muted/40 px-4 py-2 text-[15px] leading-[1.6] break-words" aria-label="Preview" role="region">
+          {#if text.trim()}
+            <Blocks blocks={previewBlocks} />
+          {:else}
+            <p class="m-0 text-[13px] text-muted-foreground">Type a message to see how it will look.</p>
+          {/if}
+        </div>
+      {/if}
     {/if}
     {#if images.length}
       <ul class="m-0 flex list-none flex-wrap gap-2 px-3 pt-3" aria-label="Attachments to send">
         {#each images as img (img.key)}
           {@const label = img.error ? `${img.name}, couldn't be added` : img.id ? img.name : `${img.name}, preparing`}
-          <li class={cn("relative size-16 overflow-hidden rounded-lg border", img.error ? "border-destructive" : "border-border")}>
-            {#if img.video}
+          <li
+            class={cn(
+              "relative h-16 overflow-hidden rounded-lg border",
+              img.kind === "file" ? "w-44 bg-muted" : "w-16",
+              img.error ? "border-destructive" : "border-border",
+            )}
+          >
+            {#if img.kind === "file"}
+              <span
+                class={cn("flex size-full items-center gap-2 py-2 pr-7 pl-2.5 text-[13px]", (!img.id || img.error) && "opacity-50")}
+                aria-label="File {label}"
+              >
+                <FileIcon class="size-5 shrink-0 text-muted-foreground" aria-hidden="true" />
+                <span class="line-clamp-2 break-all" aria-hidden="true">{img.name}</span>
+              </span>
+            {:else if img.kind === "video"}
               <!-- Its first frame, as the preview. -->
               <video
                 src={img.url}
@@ -417,16 +674,15 @@
       <button
         type="button"
         class="inline-flex size-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground"
-        aria-label="Add images or videos"
-        title="Add images or videos (or paste or drop them here)"
+        aria-label="Attach files"
+        title="Attach files (or paste or drop them here)"
         onclick={() => fileInput?.click()}
       >
-        <ImagePlus class="size-4" aria-hidden="true" />
+        <Paperclip class="size-4" aria-hidden="true" />
       </button>
       <input
         bind:this={fileInput}
         type="file"
-        accept="image/*,video/*"
         multiple
         class="hidden"
         tabindex="-1"
@@ -463,14 +719,88 @@
       class="selectable max-h-[40vh] min-h-6 flex-1 resize-none self-center bg-transparent text-[15px] leading-6 outline-none placeholder:text-muted-foreground"
     ></textarea>
     <button
-      class="inline-flex size-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground enabled:bg-primary enabled:text-primary-foreground enabled:hover:bg-primary/85 disabled:opacity-40"
-      aria-label={editing ? "Save edit" : "Send"}
-      title={editing ? "Save (Enter)" : (blockedBy ?? "Send (Enter)")}
-      disabled={!canSend}
-      onclick={submit}
+      type="button"
+      class={cn(
+        "inline-flex size-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground",
+        showFormatting && "bg-muted text-foreground",
+      )}
+      aria-pressed={showFormatting}
+      aria-label="Formatting"
+      title="Formatting toolbar"
+      onclick={toggleFormatting}
     >
-      <SendHorizontal class="size-4" />
+      <Type class="size-4" aria-hidden="true" />
     </button>
+    <Popover.Root bind:open={emojiOpen}>
+      <Popover.Trigger
+        class="inline-flex size-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground"
+        aria-label="Emoji"
+        title="Emoji"
+        onpointerdown={() => el && (caretAt = { start: el.selectionStart, end: el.selectionEnd })}
+        onkeydown={() => el && (caretAt = { start: el.selectionStart, end: el.selectionEnd })}
+      >
+        <Smile class="size-4" aria-hidden="true" />
+      </Popover.Trigger>
+      <Popover.Content side="top" align="end" class="w-auto p-2" aria-label="Emoji" onCloseAutoFocus={backToText}>
+        <EmojiPicker verb="Insert" onpick={insertEmoji} />
+      </Popover.Content>
+    </Popover.Root>
+    <div class="flex shrink-0">
+      <button
+        class={cn(
+          "inline-flex size-8 shrink-0 items-center justify-center text-muted-foreground enabled:bg-primary enabled:text-primary-foreground enabled:hover:bg-primary/85 disabled:opacity-40",
+          editing ? "rounded-lg" : "rounded-l-lg",
+        )}
+        aria-label={editing ? "Save edit" : "Send"}
+        title={editing ? "Save (Enter)" : (blockedBy ?? "Send (Enter)")}
+        disabled={!canSend}
+        onclick={submit}
+      >
+        <SendHorizontal class="size-4" />
+      </button>
+      {#if !editing}
+        <Popover.Root bind:open={laterOpen}>
+          <Popover.Trigger
+            class="inline-flex h-8 w-5 items-center justify-center rounded-r-lg border-l border-primary-foreground/25 text-muted-foreground enabled:bg-primary enabled:text-primary-foreground enabled:hover:bg-primary/85 disabled:opacity-40"
+            aria-label="Send later"
+            title="Send later"
+            disabled={!canSend}
+          >
+            <ChevronUp class="size-3.5" aria-hidden="true" />
+          </Popover.Trigger>
+          <Popover.Content side="top" align="end" class="w-72 p-1.5" onCloseAutoFocus={backToText}>
+            <WhenPicker title="Send later" onpick={scheduleSubmit}>
+              <p class="m-0 px-2 pt-2 text-[12px] text-muted-foreground">kwek sends it then if it's running, otherwise as soon as it starts again.</p>
+            </WhenPicker>
+          </Popover.Content>
+        </Popover.Root>
+      {/if}
+    </div>
     </div>
   </div>
 </div>
+
+<style>
+  .tool {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    color: var(--muted-foreground);
+  }
+  .tool:hover,
+  .tool.on {
+    background: var(--muted);
+    color: var(--foreground);
+  }
+  .tool:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: -2px;
+  }
+  .tool :global(svg) {
+    width: 16px;
+    height: 16px;
+  }
+</style>

@@ -3,6 +3,31 @@
 import { app } from "./state.svelte";
 import type { MessageView } from "./api";
 
+/** Shortcuts use ⌘ on macOS and Ctrl elsewhere (on Windows, metaKey is the Windows key). */
+export const isMac = navigator.userAgent.includes("Mac");
+export const MOD = isMac ? "⌘" : "Ctrl+";
+export const MOD_SHIFT = isMac ? "⌘⇧" : "Ctrl+Shift+";
+export const CTRL = isMac ? "⌃" : "Ctrl+";
+/** For aria-keyshortcuts. */
+export const ARIA_MOD = isMac ? "Meta" : "Control";
+
+export function mod(e: KeyboardEvent): boolean {
+  return isMac ? e.metaKey : e.ctrlKey;
+}
+
+/** Formatting in the composer (handled there; listed here for the help). */
+export const writingKeys: Array<{ keys: string; label: string }> = [
+  { keys: `${MOD}B`, label: "Bold" },
+  { keys: `${MOD}I`, label: "Italic" },
+  { keys: `${MOD_SHIFT}X`, label: "Strikethrough" },
+  { keys: `${MOD_SHIFT}U`, label: "Link" },
+  { keys: `${MOD_SHIFT}8`, label: "Bulleted list" },
+  { keys: `${MOD_SHIFT}9`, label: "Quote" },
+  { keys: `${MOD_SHIFT}C`, label: "Code" },
+  { keys: `${isMac ? "⌘⌥⇧" : "Ctrl+Alt+Shift+"}C`, label: "Code block" },
+  { keys: ":", label: "Emoji by name, or type :name: whole" },
+];
+
 export interface Binding {
   keys: string;
   label: string;
@@ -83,10 +108,11 @@ function withSelected(f: (m: MessageView) => void) {
 }
 
 export const bindings: Binding[] = [
-  { keys: "⌘K", label: "Jump to a conversation", group: "General", run: () => (app.overlay = "switcher") },
-  { keys: "⌘F", label: "Search messages", group: "General", run: () => (app.overlay = "search") },
-  { keys: "⌘J", label: "Join the meeting that is starting or running", group: "General", run: () => app.joinMeeting() },
-  { keys: "⌘⇧J", label: "Upcoming meetings", group: "General", run: () => (app.overlay = "agenda") },
+  { keys: `${MOD}K`, label: "Jump to a conversation", group: "General", run: () => (app.overlay = "switcher") },
+  { keys: `${MOD}F`, label: "Search messages", group: "General", run: () => (app.overlay = "search") },
+  { keys: `${MOD}J`, label: "Join the meeting that is starting or running", group: "General", run: () => app.joinMeeting() },
+  { keys: `${MOD_SHIFT}J`, label: "Upcoming meetings", group: "General", run: () => (app.overlay = "agenda") },
+  { keys: `${MOD_SHIFT}A`, label: "Activity: mentions, replies, saved, reminders, scheduled", group: "General", run: () => app.openActivity() },
   { keys: "/", label: "Search messages", group: "General", run: () => (app.overlay = "search") },
   { keys: "?", label: "Show keyboard shortcuts", group: "General", run: () => (app.overlay = "keys") },
   { keys: "Esc", label: "Leave the composer, close the thread or a dialog", group: "General", run: escape },
@@ -96,8 +122,8 @@ export const bindings: Binding[] = [
   { keys: "K", label: "Previous conversation with unread messages", group: "Navigate", run: () => app.nextUnread(-1) },
   { keys: "gg", label: "Oldest loaded message", group: "Navigate", run: () => edge(false) },
   { keys: "G", label: "Newest message", group: "Navigate", run: () => edge(true) },
-  { keys: "⌃H", label: "Move to the pane on the left", group: "Navigate", run: zoneLeft },
-  { keys: "⌃L", label: "Move to the pane on the right", group: "Navigate", run: zoneRight },
+  { keys: `${CTRL}H`, label: "Move to the pane on the left", group: "Navigate", run: zoneLeft },
+  { keys: `${CTRL}L`, label: "Move to the pane on the right", group: "Navigate", run: zoneRight },
   { keys: "Enter", label: "Write a message (in the sidebar: open the conversation)", group: "Messages", run: focusComposer },
   { keys: "i", label: "Write a message", group: "Messages", run: focusComposer },
   {
@@ -144,6 +170,24 @@ export const bindings: Binding[] = [
   },
   { keys: "+", label: "React", group: "Messages", run: () => withSelected((m) => (app.reactTo = m)) },
   { keys: "y", label: "Copy link to the message", group: "Messages", run: () => withSelected((m) => void app.copyLink(m)) },
+  {
+    keys: "s",
+    label: "Save the message, or take it out of saved",
+    group: "Messages",
+    run: () =>
+      withSelected((m) => {
+        if (!m.deleted && m.localState === "synced") void app.toggleSaved(m);
+      }),
+  },
+  {
+    keys: "m",
+    label: "Remind me about the message",
+    group: "Messages",
+    run: () =>
+      withSelected((m) => {
+        if (!m.deleted && m.localState === "synced") app.remindFor = { name: m.name, where: app.zone === "thread" ? "thread" : "channel" };
+      }),
+  },
   { keys: "p", label: "Show the sender's profile", group: "Messages", run: () => withSelected(showProfile) },
 ];
 
@@ -178,27 +222,33 @@ function isEditable(t: EventTarget | null): boolean {
 
 /** Global keydown handler; returns true when it handled the key. */
 export function handleKey(e: KeyboardEvent): boolean {
-  if (e.key === "k" && e.metaKey && !e.shiftKey && !e.altKey) {
+  if (e.key === "k" && mod(e) && !e.shiftKey && !e.altKey) {
     e.preventDefault();
     app.viewing = null; // one modal at a time
     app.overlay = app.overlay === "switcher" ? null : "switcher";
     return true;
   }
-  if (e.key === "f" && e.metaKey && !e.shiftKey && !e.altKey) {
+  if (e.key === "f" && mod(e) && !e.shiftKey && !e.altKey) {
     e.preventDefault();
     app.viewing = null;
     app.overlay = app.overlay === "search" ? null : "search";
     return true;
   }
-  if (e.key === "j" && e.metaKey && !e.shiftKey && !e.altKey) {
+  if (e.key === "j" && mod(e) && !e.shiftKey && !e.altKey) {
     e.preventDefault();
     app.joinMeeting();
     return true;
   }
-  if (e.key.toLowerCase() === "j" && e.metaKey && e.shiftKey && !e.altKey) {
+  if (e.key.toLowerCase() === "j" && mod(e) && e.shiftKey && !e.altKey) {
     e.preventDefault();
     app.viewing = null;
     app.overlay = app.overlay === "agenda" ? null : "agenda";
+    return true;
+  }
+  if (e.key.toLowerCase() === "a" && mod(e) && e.shiftKey && !e.altKey) {
+    e.preventDefault();
+    if (app.overlay === "activity") app.overlay = null;
+    else app.openActivity();
     return true;
   }
   // Dialogs and overlays own the keyboard while open.

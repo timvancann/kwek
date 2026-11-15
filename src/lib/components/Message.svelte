@@ -17,6 +17,11 @@
   import HardDrive from "@lucide/svelte/icons/hard-drive";
   import Video from "@lucide/svelte/icons/video";
   import Play from "@lucide/svelte/icons/play";
+  import Bookmark from "@lucide/svelte/icons/bookmark";
+  import AlarmClock from "@lucide/svelte/icons/alarm-clock";
+  import * as Popover from "$lib/components/ui/popover/index.js";
+  import WhenPicker from "./WhenPicker.svelte";
+  import { upcoming } from "$lib/when";
 
   /** "12 min", "1 h 5 min", or "under a minute". */
   function callLength(secs: number): string {
@@ -47,7 +52,7 @@
   // The article's name is "sender, time"; its description is the text plus state, so
   // screen readers read the message itself when j/k moves focus here.
   const uid = $derived(`msg-${where}-${m.name.replace(/[^a-zA-Z0-9]/g, "-")}`);
-  const state = $derived(
+  const status = $derived(
     [
       m.edited && "edited",
       m.mentionsMe && !m.deleted && "mentions you",
@@ -62,6 +67,15 @@
   );
   // Controls inside a message are reachable with Tab only when it is the selected one.
   const inner = $derived(selected ? 0 : -1);
+
+  let remindOpen = $state(false);
+  // `m` on the selected message opens its reminder choices.
+  $effect(() => {
+    if (app.remindFor && app.remindFor.name === m.name && app.remindFor.where === where) {
+      app.remindFor = null;
+      remindOpen = true;
+    }
+  });
 
   function openProfile(from: HTMLElement) {
     if (m.sender.name) app.profileOf = { user: m.sender.name, from };
@@ -141,8 +155,16 @@
       <span id="{uid}-who" class="sr-only">{m.sender.displayName}</span>
       <span id="{uid}-when" class="sr-only">{stamp(m.createUs)}</span>
     {/if}
-    <span id="{uid}-state" class="sr-only">{state}</span>
+    <span id="{uid}-state" class="sr-only">{status}</span>
 
+    {#if !m.deleted && (m.saved || m.remindAtUs)}
+      <p class="my-0 flex items-center gap-3 text-[12px] text-muted-foreground">
+        {#if m.saved}<span class="inline-flex items-center gap-1"><Bookmark class="size-3 fill-current text-accent" aria-hidden="true" />Saved</span>{/if}
+        {#if m.remindAtUs}<span class="inline-flex items-center gap-1"
+            ><AlarmClock class="size-3 text-accent" aria-hidden="true" />Reminder {upcoming(m.remindAtUs)}</span
+          >{/if}
+      </p>
+    {/if}
     {#if m.deleted}
       <p id="{uid}-body" class="my-0 text-[15px] text-muted-foreground italic">Message deleted</p>
     {:else}
@@ -285,7 +307,7 @@
     <div
       class={cn(
         "absolute -top-3 right-6 z-10 hidden items-center rounded-md border border-border bg-background p-0.5 shadow-sm group-hover:flex group-focus-within:flex",
-        selected && "flex",
+        (selected || remindOpen) && "flex",
       )}
       role="toolbar"
       aria-label="Message actions"
@@ -300,6 +322,33 @@
         <button class="act" tabindex={inner} aria-label="Edit" title="Edit (e)" onclick={(e) => (e.stopPropagation(), app.startEdit(m, where))}><Pencil /></button>
         <button class="act" tabindex={inner} aria-label="Delete" title="Delete (dd)" onclick={(e) => (e.stopPropagation(), (app.confirmDelete = m))}><Trash /></button>
       {/if}
+      <button
+        class="act"
+        tabindex={inner}
+        aria-pressed={m.saved}
+        aria-label={m.saved ? "Remove from saved" : "Save"}
+        title={m.saved ? "Remove from saved (s)" : "Save for later (s)"}
+        onclick={(e) => (e.stopPropagation(), app.toggleSaved(m))}><Bookmark class={cn(m.saved && "fill-current text-accent")} /></button
+      >
+      <Popover.Root bind:open={remindOpen}>
+        <Popover.Trigger
+          class="act"
+          tabindex={inner}
+          aria-label={m.remindAtUs ? `Reminder ${upcoming(m.remindAtUs)}, change` : "Remind me"}
+          title="Remind me about this (m)"
+          onclick={(e: MouseEvent) => e.stopPropagation()}><AlarmClock class={cn(m.remindAtUs && "text-accent")} /></Popover.Trigger
+        >
+        <Popover.Content side="bottom" align="end" class="w-72 p-1.5">
+          <WhenPicker title="Remind me about this message" onpick={(at) => ((remindOpen = false), app.remind(m, at))}>
+            {#if m.remindAtUs}
+              <button
+                class="mt-1 rounded-md px-2 py-1.5 text-left text-[13px] text-destructive hover:bg-muted"
+                onclick={() => ((remindOpen = false), app.remind(m, null))}>Remove the reminder ({upcoming(m.remindAtUs)})</button
+              >
+            {/if}
+          </WhenPicker>
+        </Popover.Content>
+      </Popover.Root>
       {#if m.webUrl}
         <button class="act" tabindex={inner} aria-label="Copy link" title="Copy link (y)" onclick={(e) => (e.stopPropagation(), app.copyLink(m))}><LinkIcon /></button>
         <button class="act" tabindex={inner} aria-label="Open in Google Chat" title="Open in Google Chat" onclick={(e) => (e.stopPropagation(), api.openUrl(m.webUrl!))}
@@ -311,7 +360,8 @@
 </article>
 
 <style>
-  .act {
+  /* Global under the article: the Remind me trigger is rendered by the popover component. */
+  article :global(.act) {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -320,15 +370,15 @@
     border-radius: 4px;
     color: var(--muted-foreground);
   }
-  .act:hover {
+  article :global(.act:hover) {
     background: var(--muted);
     color: var(--foreground);
   }
-  .act:focus-visible {
+  article :global(.act:focus-visible) {
     outline: 2px solid var(--ring);
     outline-offset: -2px;
   }
-  .act :global(svg) {
+  article :global(.act svg) {
     width: 16px;
     height: 16px;
   }

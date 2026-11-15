@@ -18,4 +18,12 @@ hasCards: boolean, webUrl: string | null,
 /**
  * Set when the message is a call (Chat posts a bare Meet link when one starts).
  */
-call: CallView | null, };
+call: CallView | null, 
+/**
+ * In the user's saved messages (kwek only).
+ */
+saved: boolean, 
+/**
+ * When kwek reminds the user about this message, if it will.
+ */
+remindAtUs: number | null, };
