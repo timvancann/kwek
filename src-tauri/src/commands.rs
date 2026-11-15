@@ -571,21 +571,7 @@ pub async fn download_attachment(
         .await
         .map_err(msg)?;
     let dir = app.path().download_dir().map_err(|_| "No Downloads folder found.")?;
-    let safe: String = name
-        .chars()
-        .map(|c| {
-            if c == '/' || c == '\\' || c == ':' || c.is_control() {
-                '_'
-            } else {
-                c
-            }
-        })
-        .collect();
-    let safe = if safe.trim_matches('.').is_empty() {
-        "attachment".to_owned()
-    } else {
-        safe
-    };
+    let safe = safe_file_name(&name);
     let mut path = dir.join(&safe);
     let mut n = 1;
     while path.exists() {
@@ -608,6 +594,27 @@ pub async fn download_attachment(
     let p = path.to_string_lossy().to_string();
     let _ = app.opener().reveal_item_in_dir(&path);
     Ok(p)
+}
+
+/// A sender's file name made safe to save on any system. Windows drops trailing dots and
+/// spaces and refuses some characters and device names; a name it rewrites would get its
+/// Mark of the Web on a different path than the file, so those never reach the disk. The
+/// same rule on every system, so a file saves under the same name everywhere.
+fn safe_file_name(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|c| if "/\\:<>\"|?*".contains(c) || c.is_control() { '_' } else { c })
+        .collect();
+    let cleaned = cleaned.trim_end_matches(['.', ' ']).trim_start();
+    if cleaned.trim_matches('.').is_empty() {
+        return "attachment".to_owned();
+    }
+    let stem = cleaned.split('.').next().unwrap_or("").trim_end().to_ascii_uppercase();
+    let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$")
+        || (stem.chars().count() == 4
+            && (stem.starts_with("COM") || stem.starts_with("LPT"))
+            && stem.chars().last().is_some_and(|c| c.is_ascii_digit() || "¹²³".contains(c)));
+    if reserved { format!("_{cleaned}") } else { cleaned.to_owned() }
 }
 
 /// Sets `com.apple.quarantine` the way browsers do: flags 0081 (downloaded, not yet
@@ -643,4 +650,23 @@ fn quarantine(path: &std::path::Path) -> std::io::Result<()> {
 #[cfg(not(any(target_os = "macos", windows)))]
 fn quarantine(_path: &std::path::Path) -> std::io::Result<()> {
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::safe_file_name;
+
+    #[test]
+    fn file_names_windows_would_rewrite_are_cleaned() {
+        assert_eq!(safe_file_name("evil.exe."), "evil.exe");
+        assert_eq!(safe_file_name("evil.exe . ."), "evil.exe");
+        assert_eq!(safe_file_name("a<b>c|d?e*f\"g.txt"), "a_b_c_d_e_f_g.txt");
+        assert_eq!(safe_file_name("../../x"), ".._.._x");
+        assert_eq!(safe_file_name("CON.txt"), "_CON.txt");
+        assert_eq!(safe_file_name("com1"), "_com1");
+        assert_eq!(safe_file_name("LPT².log"), "_LPT².log");
+        assert_eq!(safe_file_name("COMET.txt"), "COMET.txt");
+        assert_eq!(safe_file_name("..."), "attachment");
+        assert_eq!(safe_file_name("report 2026.pdf"), "report 2026.pdf");
+    }
 }
