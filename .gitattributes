@@ -1,0 +1,4 @@
+# LF everywhere, also in a Windows checkout: shell scripts and checksum lists break on CRLF
+# (the release's Windows job reads both with Git Bash).
+*.sh text eol=lf
+*.sha256 text eol=lf
