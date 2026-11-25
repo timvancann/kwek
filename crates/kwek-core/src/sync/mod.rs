@@ -1097,6 +1097,20 @@ impl Engine {
             v.saved = saved.contains(&v.name);
             v.remind_at_us = reminders.get(&v.name).copied();
         }
+        let quotes: Vec<Option<crate::chat::QuotedMessageMetadata>> = rows
+            .iter()
+            .map(|r| r.quote.as_deref().and_then(|q| serde_json::from_str(q).ok()))
+            .collect();
+        let quoted_names: Vec<String> = quotes.iter().flatten().map(|q| q.name.clone()).collect();
+        let quoted: HashMap<String, read::MessageRow> = read::messages_by_name(c, &quoted_names)?
+            .into_iter()
+            .map(|r| (r.name.clone(), r))
+            .collect();
+        for (v, q) in out.iter_mut().zip(&quotes) {
+            if let Some(q) = q.as_ref().filter(|q| !q.name.is_empty()) {
+                v.quote = Some(b.quote(q, quoted.get(&q.name)));
+            }
+        }
         Ok(out)
     }
 

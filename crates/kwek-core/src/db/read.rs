@@ -124,10 +124,12 @@ pub struct MessageRow {
     pub reactions: Option<String>,
     pub mentions_me: bool,
     pub local_state: String,
+    /// JSON quotedMessageMetadata.
+    pub quote: Option<String>,
 }
 
 const MSG_COLS: &str = "id, name, space, thread, is_reply, sender, create_us, update_us, delete_us, text,
-    formatted_text, annotations, attachments, cards, reactions, mentions_me, local_state";
+    formatted_text, annotations, attachments, cards, reactions, mentions_me, local_state, quote";
 
 fn msg_row(r: &Row) -> rusqlite::Result<MessageRow> {
     Ok(MessageRow {
@@ -148,6 +150,7 @@ fn msg_row(r: &Row) -> rusqlite::Result<MessageRow> {
         reactions: r.get(14)?,
         mentions_me: r.get(15)?,
         local_state: r.get(16)?,
+        quote: r.get(17)?,
     })
 }
 

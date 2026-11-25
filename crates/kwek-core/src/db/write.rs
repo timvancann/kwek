@@ -99,8 +99,8 @@ pub fn upsert_message(c: &Connection, m: &Message, me: &str) -> Result<Upsert> {
     c.execute(
         "INSERT INTO message (name, space, thread, is_reply, sender, create_us, update_us, delete_us,
                               text, formatted_text, annotations, attachments, cards, reactions,
-                              mentions_me, client_id, local_state, raw)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, 'synced', ?17)
+                              mentions_me, client_id, local_state, raw, quote)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, 'synced', ?17, ?18)
          ON CONFLICT(name) DO UPDATE SET
            space = excluded.space, thread = excluded.thread, is_reply = excluded.is_reply,
            sender = excluded.sender, create_us = excluded.create_us, update_us = excluded.update_us,
@@ -109,7 +109,7 @@ pub fn upsert_message(c: &Connection, m: &Message, me: &str) -> Result<Upsert> {
            attachments = excluded.attachments, cards = excluded.cards, reactions = excluded.reactions,
            mentions_me = excluded.mentions_me,
            client_id = COALESCE(excluded.client_id, message.client_id),
-           local_state = 'synced', raw = excluded.raw",
+           local_state = 'synced', raw = excluded.raw, quote = excluded.quote",
         params![
             m.name,
             space,
@@ -128,6 +128,7 @@ pub fn upsert_message(c: &Connection, m: &Message, me: &str) -> Result<Upsert> {
             !deleted && mentions(m, me),
             m.client_assigned_message_id,
             raw,
+            keep(json(&m.quoted_message_metadata)),
         ],
     )?;
     Ok(if existing.is_some() {

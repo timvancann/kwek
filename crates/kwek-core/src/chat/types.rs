@@ -1,5 +1,5 @@
-//! Google Chat API resources, only the fields kwek reads. Unknown fields are ignored here but
-//! kept verbatim in the `raw` column, so new fields can be backfilled without a resync.
+//! Google Chat API resources, only the fields kwek reads. Unknown fields are dropped: the
+//! `raw` column holds these structs re-serialized, so a new field needs a resync to fill in.
 
 use serde::{Deserialize, Serialize};
 
@@ -81,6 +81,28 @@ pub struct Message {
     pub emoji_reaction_summaries: Option<Vec<EmojiReactionSummary>>,
     pub client_assigned_message_id: Option<String>,
     pub deletion_metadata: Option<serde_json::Value>,
+    pub quoted_message_metadata: Option<QuotedMessageMetadata>,
+}
+
+/// The message this one quotes (a reply that quotes, or a forward).
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct QuotedMessageMetadata {
+    /// `spaces/S/messages/M`
+    pub name: String,
+    /// `REPLY` or `FORWARD`.
+    pub quote_type: Option<String>,
+    /// The quoted message as it was when quoted; shown when it is not cached.
+    pub quoted_message_snapshot: Option<QuotedMessageSnapshot>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct QuotedMessageSnapshot {
+    pub sender: Option<String>,
+    pub text: Option<String>,
+    /// Only for forwards.
+    pub attachments: Option<Vec<Attachment>>,
 }
 
 impl Message {

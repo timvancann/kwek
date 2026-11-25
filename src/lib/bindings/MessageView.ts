@@ -2,6 +2,7 @@
 import type { AttachmentView } from "./AttachmentView";
 import type { Block } from "./Block";
 import type { CallView } from "./CallView";
+import type { QuoteView } from "./QuoteView";
 import type { ReactionView } from "./ReactionView";
 import type { ThreadSummary } from "./ThreadSummary";
 import type { UserRef } from "./UserRef";
@@ -26,4 +27,8 @@ saved: boolean,
 /**
  * When kwek reminds the user about this message, if it will.
  */
-remindAtUs: number | null, };
+remindAtUs: number | null, 
+/**
+ * The message this one quotes.
+ */
+quote: QuoteView | null, };

@@ -18,6 +18,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrate_003.sql"),
     include_str!("migrate_004.sql"),
     include_str!("migrate_005.sql"),
+    include_str!("migrate_006.sql"),
 ];
 
 #[derive(Clone)]

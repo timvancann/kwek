@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use serde::Serialize;
 use ts_rs::TS;
 
-use crate::chat::{Attachment, EmojiReactionSummary};
+use crate::chat::{Attachment, EmojiReactionSummary, QuotedMessageMetadata};
 use crate::db::read::{MessageRow, SpaceRow, ThreadStats, UserRow};
 use crate::render::{self, Block, Ctx, Inline};
 use crate::ts::Micros;
@@ -121,6 +121,26 @@ pub struct MessageView {
     /// When kwek reminds the user about this message, if it will.
     #[ts(type = "number | null")]
     pub remind_at_us: Option<Micros>,
+    /// The message this one quotes.
+    pub quote: Option<QuoteView>,
+}
+
+/// A quoted message, from the cache when it is there, else from the snapshot Google sends.
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct QuoteView {
+    pub name: String,
+    pub space: String,
+    /// Known only when cached; with it the quote can open the message.
+    pub thread: Option<String>,
+    pub is_reply: bool,
+    pub cached: bool,
+    pub sender: Option<UserRef>,
+    /// Plain text, empty for a message that is only attachments.
+    pub text: String,
+    pub attachments: Vec<AttachmentView>,
+    pub deleted: bool,
 }
 
 /// A message listed outside its conversation: Activity, Saved, Reminders.
@@ -582,6 +602,73 @@ impl Builder<'_> {
             call,
             saved: false,
             remind_at_us: None,
+            quote: None,
+        }
+    }
+
+    /// `row` is the quoted message when it is cached.
+    pub fn quote(&self, q: &QuotedMessageMetadata, row: Option<&MessageRow>) -> QuoteView {
+        if let Some(r) = row {
+            let deleted = r.delete_us.is_some();
+            let ctx = Ctx {
+                me: self.me,
+                name_of: &|u| self.name_of(u),
+            };
+            let blocks = render::parse(r.formatted_text.as_deref().or(r.text.as_deref()).unwrap_or(""), &ctx);
+            let attachments: Vec<Attachment> = r
+                .attachments
+                .as_deref()
+                .and_then(|a| serde_json::from_str(a).ok())
+                .unwrap_or_default();
+            return QuoteView {
+                name: r.name.clone(),
+                space: r.space.clone(),
+                thread: r.thread.clone(),
+                is_reply: r.is_reply,
+                cached: true,
+                sender: Some(self.user(&r.sender)),
+                text: if deleted { String::new() } else { render::plain(&blocks) },
+                attachments: if deleted {
+                    vec![]
+                } else {
+                    attachments.iter().map(attachment_view).collect()
+                },
+                deleted,
+            };
+        }
+        let snap = q.quoted_message_snapshot.clone().unwrap_or_default();
+        // The docs call it the author's name; it may be a resource name instead.
+        let sender = snap.sender.filter(|s| !s.is_empty()).map(|s| {
+            if s.starts_with("users/") {
+                self.user(&s)
+            } else {
+                UserRef {
+                    name: String::new(),
+                    display_name: s,
+                    email: None,
+                    avatar_url: None,
+                }
+            }
+        });
+        QuoteView {
+            name: q.name.clone(),
+            space: crate::chat::space_of(&q.name),
+            thread: None,
+            is_reply: false,
+            cached: false,
+            sender,
+            text: snap.text.unwrap_or_default(),
+            // Not in a cached message, so the media protocol would refuse them: names only.
+            attachments: snap
+                .attachments
+                .unwrap_or_default()
+                .iter()
+                .map(|a| AttachmentView {
+                    media_url: None,
+                    ..attachment_view(a)
+                })
+                .collect(),
+            deleted: false,
         }
     }
 }

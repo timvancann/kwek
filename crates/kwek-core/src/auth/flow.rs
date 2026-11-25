@@ -180,7 +180,12 @@ async fn token_result(resp: reqwest::Response) -> Result<TokenResponse> {
         error_description: String,
     }
     match serde_json::from_str::<OAuthError>(&body) {
-        Ok(e) if e.error == "invalid_grant" => Err(Error::AuthRequired),
+        Ok(e) if e.error == "invalid_grant" => {
+            // Says why: expired or revoked, or "reauth related error (invalid_rapt)" when a
+            // Workspace session-length policy forces signing in again.
+            tracing::warn!("token endpoint: invalid_grant: {}", e.error_description);
+            Err(Error::AuthRequired)
+        }
         Ok(e) => Err(Error::Api {
             status: status.as_u16(),
             status_code: Some(e.error),

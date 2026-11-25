@@ -416,6 +416,61 @@ async fn engine(f: &Fake) -> (Arc<Engine>, Arc<Rec>) {
 }
 
 #[tokio::test]
+async fn quotes_show_the_quoted_message_or_its_snapshot() {
+    let f = world();
+    {
+        let mut w = f.0.lock().unwrap();
+        // Quotes cached message 3, an image only; and an old message kwek never fetched.
+        // Parsed from the API's JSON so the field names are checked too.
+        let mut quoting = message("spaces/team", "5", ME, "2024-01-01T12:30:00Z", "nice", "t5", false);
+        quoting.quoted_message_metadata = serde_json::from_value(serde_json::json!({
+            "name": "spaces/team/messages/3",
+            "lastUpdateTime": "2024-01-01T12:00:00Z",
+            "quoteType": "REPLY",
+            "quotedMessageSnapshot": { "sender": "users/ada", "text": "deploy is green" }
+        }))
+        .unwrap();
+        let mut old = message("spaces/team", "6", ME, "2024-01-01T12:40:00Z", "agreed", "t6", false);
+        old.quoted_message_metadata = serde_json::from_value(serde_json::json!({
+            "name": "spaces/team/messages/gone",
+            "quotedMessageSnapshot": { "sender": "Grace Hopper", "text": "ship it" }
+        }))
+        .unwrap();
+        let three = w.messages.iter_mut().find(|m| m.name.ends_with("/3")).unwrap();
+        three.text = Some(String::new());
+        three.formatted_text = Some(String::new());
+        three.attachment = Some(vec![Attachment {
+            content_name: Some("card.png".into()),
+            content_type: Some("image/png".into()),
+            attachment_data_ref: Some(AttachmentDataRef {
+                resource_name: Some("res-1".into()),
+            }),
+            ..Default::default()
+        }]);
+        w.messages.extend([quoting, old]);
+    }
+    let (e, _) = engine(&f).await;
+    e.bootstrap().await.unwrap();
+
+    let msgs = e.get_messages("spaces/team", None, 50).unwrap();
+    let by = |id: &str| msgs.iter().find(|m| m.name.ends_with(id)).unwrap();
+    assert!(by("/3").quote.is_none());
+
+    let q = by("/5").quote.as_ref().unwrap();
+    assert!(q.cached);
+    assert_eq!(q.sender.as_ref().unwrap().display_name, "Ada Lovelace");
+    assert_eq!(q.text, "");
+    assert_eq!(q.attachments[0].kind, "image");
+    assert!(q.attachments[0].media_url.is_some());
+    assert_eq!(q.thread.as_deref(), Some("spaces/team/threads/t3"));
+
+    let q = by("/6").quote.as_ref().unwrap();
+    assert!(!q.cached);
+    assert_eq!(q.sender.as_ref().unwrap().display_name, "Grace Hopper");
+    assert_eq!(q.text, "ship it");
+}
+
+#[tokio::test]
 async fn bootstrap_fills_cache_with_unread_and_dm_names() {
     let f = world();
     let (e, _) = engine(&f).await;

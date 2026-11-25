@@ -55,6 +55,7 @@
   const uid = $derived(`msg-${where}-${m.name.replace(/[^a-zA-Z0-9]/g, "-")}`);
   const status = $derived(
     [
+      m.quote && `quotes ${m.quote.sender?.displayName ?? "a message"}`,
       m.edited && "edited",
       m.mentionsMe && !m.deleted && "mentions you",
       m.localState === "pending" && "sending",
@@ -172,6 +173,39 @@
     {#if m.deleted}
       <p id="{uid}-body" class="my-0 text-[15px] text-muted-foreground italic">Message deleted</p>
     {:else}
+      <!-- Without a cached original or a snapshot there is nothing to show. -->
+      {#if m.quote && (m.quote.cached || m.quote.sender || m.quote.text || m.quote.attachments.length)}
+        {@const q = m.quote}
+        {@const thumb = q.attachments.find((a) => a.kind === "image" && a.mediaUrl)}
+        {@const what = q.deleted
+          ? "Message deleted"
+          : q.text || (q.attachments.length ? (q.attachments.every((a) => a.kind === "image") ? "Sent an image" : "Sent an attachment") : "")}
+        <svelte:element
+          this={q.cached ? "button" : "div"}
+          tabindex={q.cached ? inner : undefined}
+          role={q.cached ? undefined : "note"}
+          aria-label={q.cached ? `Quoted message from ${q.sender?.displayName ?? "someone"}, go to it` : undefined}
+          class={cn(
+            "mt-1 mb-1 flex max-w-[min(75ch,100%)] items-center gap-3 rounded-lg border border-border bg-muted px-3 py-2 text-left",
+            q.cached && "cursor-pointer hover:border-input",
+          )}
+          onclick={q.cached
+            ? (e: MouseEvent) => {
+                e.stopPropagation();
+                if (q.isReply && q.thread) void app.openInThread(q.space, q.thread, q.name);
+                else void app.open(q.space, q.name);
+              }
+            : undefined}
+        >
+          {#if thumb}
+            <img src={thumb.mediaUrl} alt="" loading="lazy" class="size-10 shrink-0 rounded object-cover" draggable="false" />
+          {/if}
+          <span class="min-w-0 flex-1">
+            {#if q.sender}<span class="block truncate text-[13px] font-semibold">{q.sender.displayName}</span>{/if}
+            <span class={cn("line-clamp-2 text-[13px] text-muted-foreground", (q.deleted || !q.text) && "italic")}>{what}</span>
+          </span>
+        </svelte:element>
+      {/if}
       <!-- On a phone a long-press opens the actions (Copy text among them), not a selection. -->
       <div id="{uid}-body" class={cn("max-w-[75ch] text-[15px] leading-[1.6] break-words", !app.phone && "selectable")}>
         <Blocks blocks={m.blocks} tabbable={selected} />
