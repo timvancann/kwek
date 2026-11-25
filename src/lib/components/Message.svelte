@@ -22,6 +22,7 @@
   import * as Popover from "$lib/components/ui/popover/index.js";
   import WhenPicker from "./WhenPicker.svelte";
   import { upcoming } from "$lib/when";
+  import { longpress } from "$lib/longpress";
 
   /** "12 min", "1 h 5 min", or "under a minute". */
   function callLength(secs: number): string {
@@ -106,6 +107,9 @@
      selection, so screen readers follow it. Click selects; the keyboard path is j/k. -->
 <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
 <article
+  use:longpress={() => {
+    if (app.phone && !m.deleted && m.localState === "synced") app.sheet = { m, where };
+  }}
   data-message={m.name}
   tabindex={tabbable ? 0 : -1}
   aria-labelledby="{uid}-who {uid}-when"
@@ -168,7 +172,8 @@
     {#if m.deleted}
       <p id="{uid}-body" class="my-0 text-[15px] text-muted-foreground italic">Message deleted</p>
     {:else}
-      <div id="{uid}-body" class="selectable max-w-[75ch] text-[15px] leading-[1.6] break-words">
+      <!-- On a phone a long-press opens the actions (Copy text among them), not a selection. -->
+      <div id="{uid}-body" class={cn("max-w-[75ch] text-[15px] leading-[1.6] break-words", !app.phone && "selectable")}>
         <Blocks blocks={m.blocks} tabbable={selected} />
         {#if m.edited}<span class="ml-1 text-[12px] text-muted-foreground" aria-hidden="true">(edited)</span>{/if}
       </div>
@@ -303,7 +308,7 @@
     {/if}
   </div>
 
-  {#if !m.deleted && m.localState === "synced"}
+  {#if !m.deleted && m.localState === "synced" && !app.phone}
     <div
       class={cn(
         "absolute -top-3 right-6 z-10 hidden items-center rounded-md border border-border bg-background p-0.5 shadow-sm group-hover:flex group-focus-within:flex",

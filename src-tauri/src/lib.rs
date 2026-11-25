@@ -6,6 +6,10 @@ mod idle;
 mod notify;
 #[cfg(desktop)]
 mod update;
+// Built for tests on the desktop too, where only its tests use it.
+#[cfg(any(target_os = "android", test))]
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+mod update_android;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -317,6 +321,10 @@ pub fn run() {
                 #[cfg(target_os = "macos")]
                 update::install_menu(app.handle())?;
                 tauri::async_runtime::spawn(update::run(app.handle().clone()));
+            }
+            #[cfg(target_os = "android")]
+            if update_android::ENABLED {
+                tauri::async_runtime::spawn(update_android::run(app.handle().clone()));
             }
             tracing::info!("kwek started");
             #[cfg(debug_assertions)]

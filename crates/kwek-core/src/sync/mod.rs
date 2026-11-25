@@ -2064,7 +2064,10 @@ impl Engine {
         let me = self.me();
         let users = self.db.with(|c| read::all_users(c))?;
         let name_of = |u: &str| users.get(u).and_then(|u| u.display_name.clone());
-        let ctx = crate::render::Ctx { me: &me, name_of: &name_of };
+        let ctx = crate::render::Ctx {
+            me: &me,
+            name_of: &name_of,
+        };
         Ok(crate::render::parse(&crate::render::chat_to_markdown(text), &ctx))
     }
 }

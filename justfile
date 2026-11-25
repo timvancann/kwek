@@ -32,8 +32,30 @@ android:
     export ANDROID_HOME="${ANDROID_HOME:-/opt/homebrew/share/android-commandlinetools}"
     export NDK_HOME="${NDK_HOME:-$(ls -d "$ANDROID_HOME"/ndk/* | sort -V | tail -1)}"
     [ -d src-tauri/gen/android ] || pnpm tauri android init --ci
+    # kwek's launcher icon (the generated project, which isn't in git, starts with Tauri's).
+    pnpm tauri icon src-tauri/icons/android-icon.json -o target/android-icons
+    cp -R target/android-icons/android/. src-tauri/gen/android/app/src/main/res/
     pnpm tauri android build --debug --apk --target aarch64
     adb install -r src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk
+
+# A release APK to hand around (about 25 MB; a debug one is ten times that), at
+# target/kwek-android.apk. Signed with the release key (docs/releasing.md), like the APKs on
+# GitHub, so a GitHub release installs over it; it offers those when they come out.
+android-apk:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export KWEK_UPDATES=1
+    export ANDROID_HOME="${ANDROID_HOME:-/opt/homebrew/share/android-commandlinetools}"
+    export NDK_HOME="${NDK_HOME:-$(ls -d "$ANDROID_HOME"/ndk/* | sort -V | tail -1)}"
+    bt="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)"
+    [ -d src-tauri/gen/android ] || pnpm tauri android init --ci
+    pnpm tauri icon src-tauri/icons/android-icon.json -o target/android-icons
+    cp -R target/android-icons/android/. src-tauri/gen/android/app/src/main/res/
+    pnpm tauri android build --apk --target aarch64
+    "$bt/zipalign" -f -p 4 src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release-unsigned.apk target/kwek-android-aligned.apk
+    "$bt/apksigner" sign --ks ~/.android/kwek-release.jks --ks-key-alias kwek \
+        --ks-pass file:"$HOME/.android/kwek-release.password" --out target/kwek-android.apk target/kwek-android-aligned.apk
+    echo "target/kwek-android.apk"
 
 # Build the app and install it in ~/Applications.
 install: bundle

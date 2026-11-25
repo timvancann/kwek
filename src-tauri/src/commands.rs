@@ -603,7 +603,13 @@ pub async fn download_attachment(
 fn safe_file_name(name: &str) -> String {
     let cleaned: String = name
         .chars()
-        .map(|c| if "/\\:<>\"|?*".contains(c) || c.is_control() { '_' } else { c })
+        .map(|c| {
+            if "/\\:<>\"|?*".contains(c) || c.is_control() {
+                '_'
+            } else {
+                c
+            }
+        })
         .collect();
     let cleaned = cleaned.trim_end_matches(['.', ' ']).trim_start();
     if cleaned.trim_matches('.').is_empty() {
@@ -613,8 +619,15 @@ fn safe_file_name(name: &str) -> String {
     let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$")
         || (stem.chars().count() == 4
             && (stem.starts_with("COM") || stem.starts_with("LPT"))
-            && stem.chars().last().is_some_and(|c| c.is_ascii_digit() || "¹²³".contains(c)));
-    if reserved { format!("_{cleaned}") } else { cleaned.to_owned() }
+            && stem
+                .chars()
+                .last()
+                .is_some_and(|c| c.is_ascii_digit() || "¹²³".contains(c)));
+    if reserved {
+        format!("_{cleaned}")
+    } else {
+        cleaned.to_owned()
+    }
 }
 
 /// Sets `com.apple.quarantine` the way browsers do: flags 0081 (downloaded, not yet

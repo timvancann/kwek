@@ -339,7 +339,8 @@ impl Engine {
         let sends: Vec<Row> = self
             .db
             .call(move |c| {
-                let mut st = c.prepare("SELECT id, space, thread, text, files FROM scheduled WHERE at_us <= ?1 ORDER BY at_us")?;
+                let mut st =
+                    c.prepare("SELECT id, space, thread, text, files FROM scheduled WHERE at_us <= ?1 ORDER BY at_us")?;
                 let rows = st
                     .query_map([now], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?
                     .collect::<rusqlite::Result<Vec<Row>>>()?;

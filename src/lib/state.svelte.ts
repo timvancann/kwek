@@ -113,6 +113,16 @@ class AppState {
   collapsed = $state<Record<string, boolean>>({ hidden: true });
   /** Window under 1000px: the thread panel overlays the channel. */
   narrow = $state(false);
+  /** A phone-sized window (under 700px): one screen at a time, with a tab bar. */
+  phone = $state(false);
+  /** On a phone: the tabs, or the open conversation full-screen. */
+  phoneView = $state<"tabs" | "conversation">("tabs");
+  /** On a phone: the tab the tab bar shows. */
+  tab = $state<"home" | "dms" | "activity" | "you">("home");
+  /** On a phone: the actions sheet for a message (long-press). */
+  sheet = $state<{ m: MessageView; where: "channel" | "thread" } | null>(null);
+  /** On a phone: the actions sheet for a conversation in the list (long-press). */
+  spaceSheet = $state<SpaceSummary | null>(null);
   /** How the Spaces section is sorted; remembered on this Mac. */
   spaceSort = $state<SpaceSort>(loadSpaceSort());
   /** Asks that message's Remind me choices to open (the `m` key). */
@@ -230,6 +240,13 @@ class AppState {
   private onUpdate(u: UpdateChecked) {
     if (u.kind === "latest") toast(`kwek ${u.version} is the latest version.`);
     else if (u.kind === "failed") toast.error("Couldn't check for updates. Try again later.");
+    else if (u.kind === "download")
+      toast(`kwek ${u.version} is available`, {
+        id: "update",
+        description: "Download it, then open the file to install it over this one.",
+        duration: Infinity,
+        action: { label: "Download", onClick: () => void api.openUrl(u.url).catch((e) => toast.error(errorText(e))) },
+      });
     else
       toast(`kwek ${u.version} is available`, {
         id: "update",
@@ -259,13 +276,78 @@ class AppState {
 
   async loadSpaces() {
     this.spaces = await api.listSpaces();
-    if (!this.current && this.spaces.length > 0) {
+    // A phone starts on its conversation list, not inside a conversation.
+    if (!this.current && this.spaces.length > 0 && !this.phone) {
       await this.open(this.spaces[0].name);
     }
   }
 
+  /** A dialog, sheet or popover is open (on a phone, Back closes it first). */
+  get anyModal(): boolean {
+    return !!(
+      this.overlay ||
+      this.viewing ||
+      this.reactTo ||
+      this.profileOf ||
+      this.statusPicker ||
+      this.confirmDelete ||
+      this.confirmSignOut ||
+      this.sheet ||
+      this.spaceSheet
+    );
+  }
+
+  /** On a phone: closes the topmost layer, as Back does. False when there is none. */
+  phoneBack(): boolean {
+    if (this.sheet || this.spaceSheet) {
+      this.sheet = null;
+      this.spaceSheet = null;
+    } else if (this.anyModal) {
+      this.overlay = null;
+      this.viewing = null;
+      this.reactTo = null;
+      this.profileOf = null;
+      this.statusPicker = false;
+      this.confirmDelete = null;
+      this.confirmSignOut = false;
+    } else if (this.thread) {
+      this.closeThread();
+    } else if (this.phoneView === "conversation") {
+      this.phoneView = "tabs";
+      this.editing = null;
+      void api.setOpen(null, null);
+    } else if (this.tab !== "home") {
+      this.tab = "home";
+    } else {
+      return false;
+    }
+    return true;
+  }
+
+  /** On a phone: how many layers Back can close, one at a time (kwek keeps a history entry
+   * for each). */
+  get phoneDepth(): number {
+    return (
+      (this.tab !== "home" ? 1 : 0) +
+      (this.phoneView === "conversation" ? 1 : 0) +
+      (this.thread ? 1 : 0) +
+      (this.anyModal ? 1 : 0)
+    );
+  }
+
   async open(space: string, message: string | null = null, thread: string | null = null) {
     const s = this.spaces.find((x) => x.name === space);
+    // On a phone the conversation takes the screen; coming back to the same one, Rust
+    // learns again that it is the open one (it suppresses notifications for it).
+    const reentering = this.phone && this.phoneView !== "conversation" && this.current === space;
+    if (this.phone) {
+      this.phoneView = "conversation";
+      this.overlay = null;
+    }
+    if (reentering) {
+      this.atBottom = false;
+      void api.setOpen(space, this.thread?.name ?? null);
+    }
     if (this.current !== space) {
       this.newMarker[space] = s?.unread ? (s.lastReadUs ?? null) : null;
       this.current = space;
@@ -441,6 +523,8 @@ class AppState {
   maybeMarkRead() {
     const space = this.currentSpace;
     if (!space || !this.windowFocused || !this.atBottom) return;
+    // On a phone the conversation is only on screen while it is the open view.
+    if (this.phone && this.phoneView !== "conversation") return;
     const list = this.messages[space.name] ?? [];
     const newest = list[list.length - 1];
     if (!newest || newest.localState !== "synced") return;
@@ -551,6 +635,12 @@ class AppState {
   openActivity(tab: ActivityTab = "activity") {
     this.viewing = null;
     this.activityTab = tab;
+    if (this.phone) {
+      // Its own tab there; leaving the conversation and its thread the way Back would.
+      while ((this.phoneView === "conversation" || this.thread || this.anyModal) && this.phoneBack());
+      this.tab = "activity";
+      return;
+    }
     this.overlay = "activity";
   }
 

@@ -65,8 +65,17 @@ impl From<serde_json::Error> for Error {
 
 impl From<reqwest::Error> for Error {
     fn from(e: reqwest::Error) -> Self {
-        // Never include the URL: it can carry tokens in query strings.
-        Error::Network(e.without_url().to_string())
+        // Never include the URL: it can carry tokens in query strings. The causes below it
+        // (DNS, connect, TLS) say what actually went wrong.
+        let e = e.without_url();
+        let mut msg = e.to_string();
+        let mut cause = std::error::Error::source(&e);
+        while let Some(c) = cause {
+            msg.push_str(": ");
+            msg.push_str(&c.to_string());
+            cause = c.source();
+        }
+        Error::Network(msg)
     }
 }
 

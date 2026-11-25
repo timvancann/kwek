@@ -14,6 +14,7 @@
   import SyncIndicator from "./SyncIndicator.svelte";
   import StatusPicker from "./StatusPicker.svelte";
   import { presenceWords, stateWords } from "$lib/presence";
+  import { longpress } from "$lib/longpress";
   import Hash from "@lucide/svelte/icons/hash";
   import UsersRound from "@lucide/svelte/icons/users-round";
   import BellOff from "@lucide/svelte/icons/bell-off";
@@ -22,6 +23,18 @@
   import LogOut from "@lucide/svelte/icons/log-out";
   import Eye from "@lucide/svelte/icons/eye";
   import EyeOff from "@lucide/svelte/icons/eye-off";
+
+  /** On a phone the list is a tab: `home` is everything but direct messages, `dms` only
+   * those; no window chrome, status or sign-out (the You tab has them). */
+  let { phone = false, only = null }: { phone?: boolean; only?: "home" | "dms" | null } = $props();
+
+  const sections = $derived(
+    only === "dms"
+      ? [{ id: "dms", title: "Direct messages", items: app.spaces.filter((s) => s.kind !== "space" && !s.hidden) }].filter((s) => s.items.length > 0)
+      : only === "home"
+        ? app.sections.filter((s) => s.id !== "dms")
+        : app.sections,
+  );
 
   let nav: HTMLElement | undefined = $state();
   /** You, at the bottom: the status picker opens from here. */
@@ -161,7 +174,31 @@
   const me = $derived(app.auth.state === "signedIn" ? app.auth : null);
 </script>
 
-<nav bind:this={nav} class="flex w-[268px] shrink-0 flex-col bg-sidebar text-sidebar-foreground" aria-label="Conversations">
+<nav
+  bind:this={nav}
+  class={cn("flex flex-col bg-sidebar text-sidebar-foreground", phone ? "min-h-0 w-full flex-1" : "w-[268px] shrink-0")}
+  aria-label={only === "dms" ? "Direct messages" : "Conversations"}
+>
+  {#if phone}
+    <div class="flex flex-col gap-3 px-4 pt-[calc(var(--safe-top)+12px)] pb-3">
+      <h1 class="m-0 font-display text-[24px] font-bold">{only === "dms" ? "Direct messages" : "Home"}</h1>
+      <div class="flex gap-2">
+        <button
+          class="flex h-10 min-w-0 flex-1 items-center gap-2 rounded-lg border border-border bg-background px-3 text-left text-[15px] text-muted-foreground"
+          onclick={() => (app.overlay = "switcher")}
+        >
+          Jump to a conversation
+        </button>
+        <button
+          class="inline-flex size-10 shrink-0 items-center justify-center rounded-lg border border-border bg-background text-muted-foreground"
+          aria-label="Search messages"
+          onclick={() => (app.overlay = "search")}
+        >
+          <Search class="size-5" aria-hidden="true" />
+        </button>
+      </div>
+    </div>
+  {:else}
   <!-- Room for the window controls; draggable like a title bar. -->
   <div data-tauri-drag-region class="h-12 shrink-0"></div>
 
@@ -203,9 +240,15 @@
       </button>
     {/if}
   </div>
+  {/if}
 
-  <div class="min-h-0 flex-1 overflow-y-auto px-3 pb-4">
-    {#each app.sections as section (section.id)}
+  <div class={cn("min-h-0 flex-1 overflow-y-auto pb-4", phone ? "px-2 pb-24" : "px-3")}>
+    {#if phone && sections.length === 0}
+      <p class="m-4 text-[14px] text-muted-foreground">
+        {app.spaces.length === 0 ? "Your conversations appear here as soon as the first sync finishes." : "No direct messages yet."}
+      </p>
+    {/if}
+    {#each sections as section (section.id)}
       {@const total = sectionTotal(section.items)}
       <div class="mt-5 first:mt-1">
         <div class="flex items-center gap-1">
@@ -245,7 +288,7 @@
             {#each section.items as s (s.name)}
               {@const active = s.name === app.current}
               {@const b = badge(s)}
-              {@const movable = section.id === "spaces"}
+              {@const movable = section.id === "spaces" && !phone}
               <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
               <li
                 class="group relative"
@@ -270,8 +313,9 @@
                   ></span>
                 {/if}
                 <button
+                  use:longpress={() => phone && (app.spaceSheet = s)}
                   data-space={s.name}
-                  aria-current={active ? "page" : undefined}
+                  aria-current={active && !phone ? "page" : undefined}
                   aria-keyshortcuts={movable ? "Alt+ArrowUp Alt+ArrowDown" : undefined}
                   tabindex={s.name === tabbable ? 0 : -1}
                   onkeydown={(e) => onRowKeydown(e, s, section.id, section.items)}
@@ -282,8 +326,10 @@
                   }}
                   class={cn(
                     "flex h-8 w-full items-center gap-2.5 rounded-md px-2.5 text-left text-[14.5px] outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
+                    phone && "h-11 gap-3 px-3 text-[16px] select-none",
                     // The whole row, so it stays highlighted while the pointer is on its hide button.
-                    active ? "bg-sidebar-active font-semibold" : "group-hover:bg-sidebar-hover",
+                    // On a phone no row is "current": the list is its own screen.
+                    active && !phone ? "bg-sidebar-active font-semibold" : "group-hover:bg-sidebar-hover active:bg-sidebar-hover",
                     s.muted && !active && "text-muted-foreground",
                     !s.muted && s.unread > 0 && "font-semibold",
                     dragging === s.name && "opacity-50",
@@ -321,6 +367,7 @@
                   {/if}
                   {#if unreadLabel(s)}<span class="sr-only">, {unreadLabel(s)}</span>{/if}
                 </button>
+                {#if !phone}
                 <!-- Hide or show on hover, a mouse shortcut over the badge. Out of reach until
                      the row is hovered, and out of the accessibility tree: the conversation
                      header's Hide/Unhide is the way for keyboard and screen readers. -->
@@ -337,6 +384,7 @@
                 >
                   {#if s.hidden}<Eye class="size-3.5" aria-hidden="true" />{:else}<EyeOff class="size-3.5" aria-hidden="true" />{/if}
                 </button>
+                {/if}
               </li>
             {/each}
           </ul>
@@ -345,7 +393,9 @@
     {/each}
   </div>
 
-  {#if next && nearness === "later"}
+  {#if phone && only !== "home"}
+    <!-- Meetings, status and sign-out live on Home and the You tab. -->
+  {:else if next && nearness === "later"}
     <section aria-label="Next meeting" class="mx-3 mb-2">
       <button
         class="flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-left text-[12px] text-muted-foreground hover:bg-sidebar-hover"
@@ -418,6 +468,9 @@
     </div>
   {/if}
 
+  {#if phone}
+    <!-- The You tab has your status, sync state and sign-out. -->
+  {:else}
   {#if me && app.ownPresence.access !== "off"}
     {@const own = app.ownPresence}
     <button
@@ -456,4 +509,5 @@
       <LogOut class="size-4" />
     </button>
   </div>
+  {/if}
 </nav>

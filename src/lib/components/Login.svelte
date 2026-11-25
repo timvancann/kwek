@@ -117,7 +117,7 @@
           You're signed in, but this copy of kwek doesn't have your Google client file. Choose the one you set kwek up with {@render fileName()}.
         {:else}
           Finished the setup guide? Choose the client file you downloaded at the end {@render fileName()}. New to kwek? The guide takes about 15
-          minutes. kwek signs in through your own Google Cloud project, so your messages only travel between your Mac and Google.
+          minutes. kwek signs in through your own Google Cloud project, so your messages only travel between your device and Google.
         {/if}
       </p>
       <Button id="choose-button" class="h-10 w-full text-[14px]" onclick={() => fileInput?.click()} disabled={busy}>Choose client file</Button>
@@ -154,7 +154,7 @@
     {:else}
       <h1 class="m-0 font-display text-[26px] font-bold">kwek</h1>
       <p class="mt-1 mb-6 text-[14px] text-muted-foreground">
-        Google Chat for your Mac. Connect your Google account once; after that kwek keeps your conversations in sync and works offline.
+        Google Chat outside the browser. Connect your Google account once; after that kwek keeps your conversations in sync and works offline.
       </p>
       <Button id="connect-button" class="h-10 w-full text-[14px]" onclick={connect} disabled={busy}>
         {busy ? "Waiting for Google" : "Connect to Google"}

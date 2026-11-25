@@ -1611,9 +1611,15 @@ async fn a_scheduled_message_waits_then_sends() {
     let f = world();
     let (e, _) = engine(&f).await;
     e.bootstrap().await.unwrap();
-    e.schedule("spaces/team", Some("spaces/team/threads/t1"), "later on", vec![], ts::now() + HOUR)
-        .await
-        .unwrap();
+    e.schedule(
+        "spaces/team",
+        Some("spaces/team/threads/t1"),
+        "later on",
+        vec![],
+        ts::now() + HOUR,
+    )
+    .await
+    .unwrap();
     e.later_pass().await.unwrap();
     assert!(f.0.lock().unwrap().created.is_empty());
     let s = e.scheduled().unwrap();
@@ -1680,9 +1686,33 @@ async fn activity_lists_mentions_and_replies_in_my_threads() {
     {
         let mut w = f.0.lock().unwrap();
         // A reply in t1, where I replied before; one in t3, where I never wrote.
-        w.messages.push(message("spaces/team", "5", "users/ada", "2024-01-01T13:00:00Z", "agreed", "t1", true));
-        w.messages.push(message("spaces/team", "6", "users/ada", "2024-01-01T13:05:00Z", "noise", "t3", true));
-        w.messages.push(message("spaces/dm", "7", "users/ada", "2024-01-01T13:10:00Z", "ping <users/me>", "t7", false));
+        w.messages.push(message(
+            "spaces/team",
+            "5",
+            "users/ada",
+            "2024-01-01T13:00:00Z",
+            "agreed",
+            "t1",
+            true,
+        ));
+        w.messages.push(message(
+            "spaces/team",
+            "6",
+            "users/ada",
+            "2024-01-01T13:05:00Z",
+            "noise",
+            "t3",
+            true,
+        ));
+        w.messages.push(message(
+            "spaces/dm",
+            "7",
+            "users/ada",
+            "2024-01-01T13:10:00Z",
+            "ping <users/me>",
+            "t7",
+            false,
+        ));
     }
     let (e, _) = engine(&f).await;
     e.bootstrap().await.unwrap();

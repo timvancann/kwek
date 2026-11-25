@@ -119,9 +119,10 @@
     }
   });
 
+  // Not on a phone: there focus means the keyboard, which only a tap on the box should bring up.
   $effect(() => {
     void app.focusNonce;
-    if (app.zone === zone && el && document.activeElement !== el && !app.overlay) el.focus();
+    if (app.zone === zone && el && document.activeElement !== el && !app.overlay && !app.phone) el.focus();
   });
 
   // Tell screen reader users that suggestions appeared (a textarea cannot be a combobox).
@@ -504,7 +505,8 @@
         return;
       }
     }
-    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+    // On a phone Enter is a new line and Send is the button, as in Slack's app.
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing && !app.phone) {
       e.preventDefault();
       if (!canSend && blockedBy && !editing) app.say(`${blockedBy}.`);
       void submit();
@@ -517,7 +519,7 @@
   }
 </script>
 
-<div class="relative px-6 pt-1 pb-5">
+<div class={cn("relative px-6 pt-1 pb-5", app.phone && "px-2 pb-[calc(var(--safe-bottom)+8px)]")}>
   {#if suggestions.length}
     <ul
       id={listId}

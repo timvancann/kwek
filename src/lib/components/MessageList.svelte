@@ -30,12 +30,14 @@
     if (scroller) scroller.scrollTop = scroller.scrollHeight;
   }
 
+  // The list itself shrinks too: a phone's keyboard opening, the composer growing.
   $effect(() => {
-    if (!content) return;
+    if (!content || !scroller) return;
     const ro = new ResizeObserver(() => {
       if (stickToBottom) toBottom();
     });
     ro.observe(content);
+    ro.observe(scroller);
     return () => ro.disconnect();
   });
 

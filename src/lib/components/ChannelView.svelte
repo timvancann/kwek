@@ -14,6 +14,7 @@
   import Eye from "@lucide/svelte/icons/eye";
   import External from "@lucide/svelte/icons/external-link";
   import Users from "@lucide/svelte/icons/users";
+  import ChevronLeft from "@lucide/svelte/icons/chevron-left";
 
   const s = $derived(app.currentSpace);
   const title = $derived(s?.displayName ?? "");
@@ -21,7 +22,16 @@
 
 {#if s}
   <section class="flex min-w-0 flex-1 flex-col" aria-label={title}>
-    <header data-tauri-drag-region class="flex h-14 shrink-0 items-center gap-2.5 border-b border-border pr-4 pl-6">
+    <header
+      data-tauri-drag-region
+      class={cn(
+        "flex h-14 shrink-0 items-center gap-2.5 border-b border-border pr-4 pl-6",
+        app.phone && "h-auto min-h-14 gap-1.5 pt-[var(--safe-top)] pr-2 pl-1",
+      )}
+    >
+      {#if app.phone}
+        <button class="hdr back" aria-label="Back" onclick={() => history.back()}><ChevronLeft /></button>
+      {/if}
       {#if s.kind === "dm" && s.peer}
         {@const p = app.presence[s.peer]}
         <div class="min-w-0">
@@ -64,6 +74,8 @@
         <button class="hdr" aria-pressed={s.muted} aria-label="Mute" title={s.muted ? "Unmute" : "Mute"} onclick={() => app.toggleMute(s)}>
           {#if s.muted}<BellOff />{:else}<Bell />{/if}
         </button>
+        <!-- On a phone, long-press the conversation in the list for these. -->
+        {#if !app.phone}
         <button
           class="hdr"
           aria-label={s.hidden ? "Show in the sidebar again" : "Hide from the sidebar"}
@@ -72,7 +84,8 @@
         >
           {#if s.hidden}<Eye />{:else}<EyeOff />{/if}
         </button>
-        {#if s.webUrl}
+        {/if}
+        {#if s.webUrl && !app.phone}
           <button class="hdr" aria-label="Open in Google Chat" title="Open in Google Chat" onclick={() => api.openUrl(s.webUrl!)}>
             <External />
           </button>
@@ -113,6 +126,16 @@
   .hdr :global(svg) {
     width: 16px;
     height: 16px;
+  }
+  /* A thumb-sized target for Back. */
+  .hdr.back {
+    width: 44px;
+    height: 44px;
+    flex-shrink: 0;
+  }
+  .hdr.back :global(svg) {
+    width: 24px;
+    height: 24px;
   }
   .kbd {
     font-family: var(--font-sans);

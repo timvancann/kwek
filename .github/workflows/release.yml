@@ -1,8 +1,8 @@
 name: Release
 
 # Push a tag like v0.2.0 (the version in Cargo.toml, package.json and tauri.conf.json) and
-# this builds kwek.app for Apple silicon, plus a Windows installer, and publishes both as a
-# GitHub release. (Not Intel:
+# this builds kwek.app for Apple silicon, plus a Windows installer and an Android APK, and
+# publishes them as a GitHub release. (Not Intel:
 # ONNX Runtime, behind related search, has no prebuilt library for Intel Macs.) The build carries no Google client: each user gives kwek their own on first
 # launch (docs/setup.md). With the signing secrets set (docs/releasing.md) the app is
 # signed: with a Developer ID it is also notarized and opens like any other; with the
@@ -66,8 +66,70 @@ jobs:
             kwek-windows-setup.exe.sig
           if-no-files-found: error
 
+  # The Android APK (arm64), signed with the release key (docs/releasing.md) so each one
+  # installs over the last, and with the updater key for latest.json. Android can't update an
+  # app in place: kwek offers the APK to download instead (src-tauri/src/update_android.rs).
+  android:
+    runs-on: ubuntu-latest
+    # Pinned and uncached for the same reason as the release job: it holds the signing keys.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          targets: aarch64-linux-android
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        with:
+          version: 11
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: lts/*
+      - run: pnpm install --frozen-lockfile
+
+      # The runner image has the Android SDK, an NDK and JDK 17. The Android project is
+      # generated (it isn't in git), then given kwek's launcher icon, as in `just android`.
+      - name: Build the APK
+        env:
+          KWEK_UPDATES: "1"
+        run: |
+          export JAVA_HOME="$JAVA_HOME_17_X64"
+          export NDK_HOME="$ANDROID_NDK_LATEST_HOME"
+          pnpm tauri android init --ci
+          pnpm tauri icon src-tauri/icons/android-icon.json -o target/android-icons
+          cp -R target/android-icons/android/. src-tauri/gen/android/app/src/main/res/
+          pnpm tauri android build --apk --target aarch64
+
+      - name: Sign it
+        env:
+          ANDROID_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if [ -z "$ANDROID_KEYSTORE" ] || [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::No Android release key (ANDROID_KEYSTORE) or updater key (TAURI_SIGNING_PRIVATE_KEY). See docs/releasing.md."
+            exit 1
+          fi
+          echo "$ANDROID_KEYSTORE" | base64 --decode > "$RUNNER_TEMP/kwek-release.jks"
+          bt="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)"
+          "$bt/zipalign" -f -p 4 \
+            src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release-unsigned.apk \
+            "$RUNNER_TEMP/aligned.apk"
+          "$bt/apksigner" sign --ks "$RUNNER_TEMP/kwek-release.jks" --ks-key-alias kwek \
+            --ks-pass env:ANDROID_KEYSTORE_PASSWORD --out kwek-android.apk "$RUNNER_TEMP/aligned.apk"
+          "$bt/apksigner" verify kwek-android.apk
+          pnpm tauri signer sign "$PWD/kwek-android.apk"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: android
+          path: |
+            kwek-android.apk
+            kwek-android.apk.sig
+          if-no-files-found: error
+
   release:
-    needs: windows
+    needs: [windows, android]
     runs-on: macos-latest
     env:
       # The oldest macOS kwek runs on, as tauri.conf.json's minimumSystemVersion says.
@@ -170,6 +232,9 @@ jobs:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: windows
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: android
 
       # What installed copies update from: the signed app as kwek.app.tar.gz, its signature
       # by the updater key (docs/releasing.md), and latest.json pointing at both. kwek reads
@@ -194,9 +259,12 @@ jobs:
             --arg url "$download/kwek.app.tar.gz" \
             --arg win_signature "$(cat kwek-windows-setup.exe.sig)" \
             --arg win_url "$download/kwek-windows-setup.exe" \
+            --arg apk_signature "$(cat kwek-android.apk.sig)" \
+            --arg apk_url "$download/kwek-android.apk" \
             '{version: $version, pub_date: $date, platforms: {
               "darwin-aarch64": {signature: $signature, url: $url},
-              "windows-x86_64": {signature: $win_signature, url: $win_url}}}' \
+              "windows-x86_64": {signature: $win_signature, url: $win_url},
+              "android-aarch64": {signature: $apk_signature, url: $apk_url}}}' \
             > latest.json
 
       - name: Publish the release
@@ -214,7 +282,8 @@ jobs:
             open_it="For Macs with Apple silicon, macOS 13 or later. Download $zip, unzip it and drag kwek into Applications. This build isn't notarized by Apple, so macOS blocks it the first time: open it once, then go to System Settings, Privacy & Security, and click Open Anyway. Or run \`xattr -dr com.apple.quarantine /Applications/kwek.app\` in Terminal."
           fi
           windows="For Windows 10 and 11 (64-bit): download kwek-windows-setup.exe and run it. It isn't code-signed, so SmartScreen warns the first time: click More info, then Run anyway."
-          updates="kwek updates itself (on a Mac from 0.3.0 on): it offers a new version when there is one. On a Mac, Check for Updates in the kwek menu asks right away."
-          printf '%s\n\n%s\n\n%s\n\n%s\n' "$open_it" "$windows" "$setup" "$updates" > "$RUNNER_TEMP/notes.md"
-          gh release create "$GITHUB_REF_NAME" "$zip" kwek.app.tar.gz kwek-windows-setup.exe latest.json --title "kwek $VERSION" \
+          android="For Android phones (arm64): download kwek-android.apk on the phone and open it. Android asks once to allow installing apps from your browser or file manager."
+          updates="kwek updates itself (on a Mac from 0.3.0 on): it offers a new version when there is one. On a Mac, Check for Updates in the kwek menu asks right away. On Android it offers the new APK to download and install over the old one."
+          printf '%s\n\n%s\n\n%s\n\n%s\n\n%s\n' "$open_it" "$windows" "$android" "$setup" "$updates" > "$RUNNER_TEMP/notes.md"
+          gh release create "$GITHUB_REF_NAME" "$zip" kwek.app.tar.gz kwek-windows-setup.exe kwek-android.apk latest.json --title "kwek $VERSION" \
             --notes-file "$RUNNER_TEMP/notes.md" --generate-notes

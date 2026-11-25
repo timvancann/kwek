@@ -45,6 +45,9 @@
   --badge: #18181b;
   --badge-foreground: #ffffff;
   --radius: 8px;
+  /* Room for a phone's status bar and gesture bar; 0 on the desktop. */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
   color-scheme: light;
 }
 

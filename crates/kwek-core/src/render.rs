@@ -183,7 +183,10 @@ fn normalize_fences(s: &str) -> std::borrow::Cow<'_, str> {
         // parts[i + 1] is code only when a closing fence follows it.
         if i + 2 < parts.len() {
             let code = parts[i + 1];
-            let code = code.strip_prefix("\r\n").or_else(|| code.strip_prefix('\n')).unwrap_or(code);
+            let code = code
+                .strip_prefix("\r\n")
+                .or_else(|| code.strip_prefix('\n'))
+                .unwrap_or(code);
             let code = code.strip_suffix('\n').unwrap_or(code);
             if !out.is_empty() && !out.ends_with('\n') {
                 out.push('\n');
@@ -771,12 +774,14 @@ mod tests {
                     para(vec![t("ok")]),
                 ],
             ),
-            ("```one line```", vec![Block::Code { text: "one line".into() }]),
-            // An unclosed fence stays as Markdown has it.
             (
-                "```\nopen",
-                vec![Block::Code { text: "open".into() }],
+                "```one line```",
+                vec![Block::Code {
+                    text: "one line".into(),
+                }],
             ),
+            // An unclosed fence stays as Markdown has it.
+            ("```\nopen", vec![Block::Code { text: "open".into() }]),
             (
                 "> quoted\n\nafter",
                 vec![
@@ -942,7 +947,12 @@ mod tests {
                 "`*x*` *y*",
                 vec![para(vec![Inline::Code { text: "*x*".into() }, t(" "), b("y")])],
             ),
-            ("```\n*x*\n_y_\n```", vec![Block::Code { text: "*x*\n_y_".into() }]),
+            (
+                "```\n*x*\n_y_\n```",
+                vec![Block::Code {
+                    text: "*x*\n_y_".into(),
+                }],
+            ),
             // A bullet, not bold.
             (
                 "* a\n* b",
@@ -956,7 +966,12 @@ mod tests {
                 "see <https://x.nl|the site>",
                 vec![para(vec![t("see "), link("https://x.nl", "the site")])],
             ),
-            ("> quoted", vec![Block::Quote { blocks: vec![para(vec![t("quoted")])] }]),
+            (
+                "> quoted",
+                vec![Block::Quote {
+                    blocks: vec![para(vec![t("quoted")])],
+                }],
+            ),
             // Chat shows a leading # as is.
             ("#general", vec![para(vec![t("#general")])]),
         ];

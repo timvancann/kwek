@@ -137,9 +137,11 @@ export interface InAppNotice extends NavPayload {
   url?: string | null;
 }
 
-/** A release build's update check (src-tauri's update.rs). */
+/** A release build's update check (src-tauri's update.rs; on Android update_android.rs,
+ * which can only offer the APK to download). */
 export type UpdateChecked =
   | { kind: "available"; version: string }
+  | { kind: "download"; version: string; url: string }
   | { kind: "latest"; version: string }
   | { kind: "failed" };
 
